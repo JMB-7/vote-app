@@ -112,9 +112,18 @@ function isUnauthorized(e: unknown) {
   return e instanceof ApiRequestError && e.status === 401
 }
 
+function handleParticipantUnauthorized(e: unknown, token: string) {
+  if (!isUnauthorized(e) || role.value !== 'participant' || !token || token !== sessionToken.value) return false
+  clearParticipantSession()
+  error.value = 'La sesión de delegado ya no está activa. Vuelve a ingresar mientras el ingreso a la asamblea esté abierto.'
+  notice.value = ''
+  return true
+}
+
 function clearParticipantSession() {
   sessionToken.value = ''
   sessionAssemblyId.value = ''
+  pendingJoinCode.value = ''
   state.value = null
   selectedOption.value = ''
   reviewingVote.value = false
@@ -178,10 +187,7 @@ async function refresh() {
       }
     } catch (e) {
       if (sessionToken.value !== requestToken) return
-      if (isUnauthorized(e) || (e as Error).message.toLowerCase().includes('sesión')) {
-        clearParticipantSession()
-        error.value = 'La sesión de delegado ya no está activa. Puedes ingresar de nuevo.'
-      } else {
+      if (!handleParticipantUnauthorized(e, requestToken)) {
         error.value = (e as Error).message
       }
     } finally { loading.value = false }
@@ -256,7 +262,9 @@ async function join() {
     state.value = normalizeState(joined)
     notice.value = 'Te uniste a la sala. Tu teléfono queda en espera.'
     await refresh()
-  } catch (e) { error.value = (e as Error).message }
+  } catch (e) {
+    if (!handleParticipantUnauthorized(e, sessionToken.value)) error.value = (e as Error).message
+  }
   finally { loading.value = false }
 }
 
@@ -298,7 +306,9 @@ async function submitVote() {
     selectedOption.value = ''
     reviewingVote.value = false
     accepted = true
-  } catch (e) { error.value = (e as Error).message }
+  } catch (e) {
+    if (!handleParticipantUnauthorized(e, sessionToken.value)) error.value = (e as Error).message
+  }
   finally { loading.value = false; voteSubmitting.value = false }
   if (accepted) await refresh()
 }
