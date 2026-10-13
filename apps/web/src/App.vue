@@ -497,6 +497,7 @@ function updateCommitteeApproval(proposalId: string, field: 'yesVotes' | 'noVote
 }
 
 async function updateParticipantCommitteeStatus(person: NonNullable<PublicState['participants']>[number]) {
+  if (!person.id) return
   await moderatorAction(`/moderator/participants/${encodeURIComponent(person.id)}`, 'PATCH', {
     assemblyRole: person.assemblyRole,
     committeeEligible: person.committeeEligible,
@@ -587,7 +588,7 @@ function editParticipant(person: { id?: string; firstName: string; lastName: str
 
 async function createRound() {
   const options = roundCategory.value === 'committee' && committeeType.value !== 'nomination'
-    ? eligibleCommitteeCandidates.value.filter((person) => committeeCandidateSelections.value.includes(person.id))
+    ? eligibleCommitteeCandidates.value.filter((person) => person.id && committeeCandidateSelections.value.includes(person.id))
       .map((person) => ({ label: `${person.firstName} ${person.lastName}`, candidateParticipantId: person.id }))
     : optionsText.value.split('\n').map((label) => label.trim()).filter(Boolean).map((label) => ({ label }))
   if (roundCategory.value === 'office' && options.length < 2) { error.value = 'Agrega al menos dos opciones, una por línea.'; return }
@@ -833,7 +834,7 @@ onUnmounted(() => { if (refreshTimer) window.clearInterval(refreshTimer); realti
           <section v-if="assemblyStatus === 'completed'" class="status-panel assembly-completed" role="status"><span class="status-dot"></span><div><strong>Asamblea finalizada</strong><p>El sistema está en modo de consulta.<template v-if="completionTime"> Se registró {{ completionTime }}.</template></p></div></section>
           <template v-else>
           <section class="card"><div class="section-heading"><div><p class="eyebrow">INGRESO</p><h2>Participantes</h2></div><button class="secondary" @click="refresh">Actualizar lista</button></div>
-            <ul class="participant-list"><li v-for="person in state?.participants || []" :key="person.id"><div><span>{{ person.firstName }} {{ person.lastName }}</span><div class="committee-profile"><label>Rol para reglas de comisión<select v-model="person.assemblyRole" @change="updateParticipantCommitteeStatus(person)"><option value="">Sin confirmar</option><option value="delegate">Delegado</option><option value="president">Presidente</option><option value="vice_president">Vicepresidente</option><option value="secretary">Secretario</option><option value="treasurer">Tesorero</option></select></label><label class="checkbox-label"><input v-model="person.committeeEligible" type="checkbox" @change="updateParticipantCommitteeStatus(person)" /> Elegibilidad confirmada por Secretaría/mesa</label></div></div><span v-if="assemblyStatus === 'lobby_open' || assemblyStatus === 'lobby_closed'" class="person-actions"><button class="link-button" @click="editParticipant(person)">Corregir</button><button class="link-button remove-link" @click="moderatorAction(`/moderator/participants/${encodeURIComponent(person.id)}`, 'PATCH', { status: 'removed' })">Retirar</button></span></li><li v-if="!state?.participants?.length" class="empty">La lista aparecerá aquí cuando se unan.</li></ul>
+            <ul class="participant-list"><li v-for="(person, index) in state?.participants || []" :key="person.id || `${person.firstName}-${person.lastName}-${index}`"><div><span>{{ person.firstName }} {{ person.lastName }}</span><div v-if="person.id" class="committee-profile"><label>Rol para reglas de comisión<select v-model="person.assemblyRole" @change="updateParticipantCommitteeStatus(person)"><option value="">Sin confirmar</option><option value="delegate">Delegado</option><option value="president">Presidente</option><option value="vice_president">Vicepresidente</option><option value="secretary">Secretario</option><option value="treasurer">Tesorero</option></select></label><label class="checkbox-label"><input v-model="person.committeeEligible" type="checkbox" @change="updateParticipantCommitteeStatus(person)" /> Elegibilidad confirmada por Secretaría/mesa</label></div></div><span v-if="person.id && (assemblyStatus === 'lobby_open' || assemblyStatus === 'lobby_closed')" class="person-actions"><button class="link-button" @click="editParticipant(person)">Corregir</button><button class="link-button remove-link" @click="moderatorAction(`/moderator/participants/${encodeURIComponent(person.id)}`, 'PATCH', { status: 'removed' })">Retirar</button></span></li><li v-if="!state?.participants?.length" class="empty">La lista aparecerá aquí cuando se unan.</li></ul>
             <div class="action-row"><button v-if="lobbyStatus === 'lobby_open'" class="secondary" :disabled="loading" @click="moderatorAction(`/moderator/assemblies/${assemblyId}/lobby`, 'PATCH', { status: 'lobby_closed' })">Cerrar ingreso</button><span v-else class="status-line">El ingreso está cerrado.</span><a v-if="code" class="text-link" :href="`/?join=${encodeURIComponent(code)}`">Código: {{ code }}</a></div>
             <div v-if="qrImage" class="qr-panel"><img :src="qrImage" alt="Código QR para unirse a la Asamblea" /><div><strong>Escanea para unirte</strong><p>Abre este enlace en el proyector y muestra el código QR durante el ingreso.</p><a :href="`/?code=${encodeURIComponent(code)}`">{{ origin }}/?code={{ code }}</a></div></div>
           </section>
@@ -856,7 +857,6 @@ onUnmounted(() => { if (refreshTimer) window.clearInterval(refreshTimer); realti
             </template>
           </section>
           <section v-if="assemblyStatus !== 'preparing' && round?.status !== 'published'" class="card assembly-close"><p class="eyebrow">CIERRE DE SESIÓN</p><h2>Finalizar Asamblea</h2><p>Registra el cierre después de que la mesa haya aprobado la decisión. Se conservarán resultados y registros para consulta.</p><p v-if="round?.status === 'open'" class="status-line">Cierra la papeleta abierta antes de finalizar la Asamblea.</p><button class="danger" :disabled="loading || round?.status === 'open'" @click="completeAssembly">Finalizar Asamblea</button></section>
-          </div>
           </template>
           <section v-if="state?.rounds?.length" class="card official-history">
             <p class="eyebrow">ACTA DE RESULTADOS</p><h2>Declaraciones oficiales de la mesa</h2>
