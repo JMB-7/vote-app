@@ -91,7 +91,7 @@ export class VotingService {
   async participantState(participantId: string) {
     const participant = await this.prisma.participantSession.findUnique({
       where: { id: participantId },
-      include: { assembly: { select: { status: true, completedAt: true } } },
+      include: { assembly: { select: { id: true, name: true, status: true, completedAt: true } } },
     })
     if (!participant || participant.status !== 'active') throw new NotFoundException('Sesión no encontrada')
     const round = await this.prisma.round.findFirst({
@@ -110,6 +110,7 @@ export class VotingService {
       : null
     const results = round?.status === 'published' ? await this.publishedResults(round.id) : undefined
     return {
+      assembly: { id: participant.assembly.id, name: participant.assembly.name, status: participant.assembly.status, completedAt: participant.assembly.completedAt?.toISOString() ?? null },
       assemblyStatus: participant.assembly.status,
       assemblyCompletedAt: participant.assembly.completedAt?.toISOString() ?? null,
       lobbyStatus: participant.assembly.status === 'lobby_open' ? 'open' as const : 'closed' as const,

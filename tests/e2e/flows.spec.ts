@@ -78,6 +78,75 @@ test('delegado ingresa con datos sintéticos y confirma su participación', asyn
   expect(voteCount).toBe(1)
 })
 
+test('delegado conserva la sesión al recargar y puede salir limpiando el estado local', async ({ page }) => {
+  await page.addInitScript(() => {
+    localStorage.setItem('participantSessionToken', 'synthetic-session-token')
+    localStorage.setItem('participantAssemblyId', 'assembly-a')
+  })
+  await page.route(api, async (route) => {
+    const url = new URL(route.request().url())
+    if (route.request().method() === 'GET' && url.pathname.endsWith('/participant/me')) {
+      await route.fulfill({ json: { ...participantState(), assembly: { id: 'assembly-a', name: 'Asamblea A', status: 'in_progress' } } })
+      return
+    }
+    if (route.request().method() === 'GET' && url.pathname.endsWith('/assemblies/CODE-A/public-state')) {
+      await route.fulfill({ json: { assembly: { id: 'assembly-a', name: 'Asamblea A' } } })
+      return
+    }
+    await route.fulfill({ status: 404, json: { message: 'No mock route for participant session test' } })
+  })
+
+  await page.goto('/?join=CODE-A')
+  await expect(page.getByText('Asamblea A')).toBeVisible()
+  await page.reload()
+  await expect(page.getByText('Asamblea A')).toBeVisible()
+  await page.getByRole('button', { name: 'Salir / cambiar de participante' }).click()
+  await expect(page.getByRole('heading', { name: 'Bienvenido' })).toBeVisible()
+  await expect(page.getByLabel('Código de sala')).toHaveValue('CODE-A')
+  expect(await page.evaluate(() => localStorage.getItem('participantSessionToken'))).toBeNull()
+  expect(await page.evaluate(() => localStorage.getItem('participantAssemblyId'))).toBeNull()
+})
+
+test('delegado debe confirmar el cambio cuando abre un QR de otra Asamblea', async ({ page }) => {
+  await page.addInitScript(() => {
+    localStorage.setItem('participantSessionToken', 'old-session-token')
+    localStorage.setItem('participantAssemblyId', 'assembly-a')
+  })
+  await page.route(api, async (route) => {
+    const request = route.request()
+    const url = new URL(request.url())
+    if (request.method() === 'GET' && url.pathname.endsWith('/participant/me')) {
+      const assemblyId = request.headers()['authorization'] === 'Bearer new-session-token' ? 'assembly-b' : 'assembly-a'
+      await route.fulfill({ json: { ...participantState(), assembly: { id: assemblyId, name: `Asamblea ${assemblyId === 'assembly-a' ? 'A' : 'B'}`, status: 'in_progress' } } })
+      return
+    }
+    if (request.method() === 'GET' && url.pathname.endsWith('/assemblies/CODE-B/public-state')) {
+      await route.fulfill({ json: { assembly: { id: 'assembly-b', name: 'Asamblea B' } } })
+      return
+    }
+    if (request.method() === 'POST' && url.pathname.endsWith('/assemblies/CODE-B/join')) {
+      await route.fulfill({ json: { participantSessionToken: 'new-session-token', ...participantState(), assembly: { id: 'assembly-b', name: 'Asamblea B', status: 'in_progress' } } })
+      return
+    }
+    await route.fulfill({ status: 404, json: { message: 'No mock route for QR switch test' } })
+  })
+
+  await page.goto('/?join=CODE-B')
+  await expect(page.getByRole('alert')).toContainText('Este QR corresponde a otra Asamblea')
+  await expect(page.getByText('Asamblea A')).toHaveCount(0)
+  await page.getByRole('button', { name: 'Cerrar sesión y cambiar a la Asamblea del QR' }).click()
+  await expect(page.getByRole('heading', { name: 'Bienvenido' })).toBeVisible()
+  await expect(page.getByLabel('Código de sala')).toHaveValue('CODE-B')
+  expect(await page.evaluate(() => localStorage.getItem('participantSessionToken'))).toBeNull()
+
+  await page.getByLabel('Nombre').fill('Nuevo')
+  await page.getByLabel('Apellido').fill('Delegado')
+  await page.getByRole('button', { name: 'Unirme a la sala' }).click()
+  await expect(page.getByText('Te uniste a la sala. Tu teléfono queda en espera.')).toBeVisible()
+  await expect(page.getByText('Asamblea B')).toBeVisible()
+  expect(await page.evaluate(() => localStorage.getItem('participantSessionToken'))).toBe('new-session-token')
+})
+
 test('un error de red conserva la selección y permite revisar y reintentar', async ({ page }) => {
   let voteCount = 0
   await page.route(api, async (route) => {
