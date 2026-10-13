@@ -531,7 +531,7 @@ async function confirmModeratorAction() {
   let succeeded = false
   try {
     await request(action.path, { method: action.method, ...(action.body === undefined ? {} : { body: JSON.stringify(action.body) }) }, moderatorToken.value)
-    notice.value = ''
+    notice.value = 'Acción registrada.'
     succeeded = true
   } catch (e) { error.value = (e as Error).message }
   finally { loading.value = false }
@@ -839,6 +839,8 @@ onUnmounted(() => { if (refreshTimer) window.clearInterval(refreshTimer); realti
             <div v-if="qrImage" class="qr-panel"><img :src="qrImage" alt="Código QR para unirse a la Asamblea" /><div><strong>Escanea para unirte</strong><p>Abre este enlace en el proyector y muestra el código QR durante el ingreso.</p><a :href="`/?code=${encodeURIComponent(code)}`">{{ origin }}/?code={{ code }}</a></div></div>
           </section>
           <section class="card"><p class="eyebrow">PAPELETA</p><h2>{{ round?.title || 'Preparar votación' }}</h2>
+            <div v-if="round?.status === 'open'" class="action-row"><p class="status-line">La votación está abierta. Los resultados permanecerán ocultos hasta que la mesa los publique.</p><button class="danger" :disabled="loading" @click="moderatorAction(`/moderator/rounds/${encodeURIComponent(round.id)}/close`)">Cerrar votación</button></div>
+            <div v-else-if="round?.status === 'closed'" class="action-row"><p class="status-line">La papeleta está cerrada. Revisa el conteo antes de publicarlo.</p><button class="primary" :disabled="loading" @click="moderatorAction(`/moderator/rounds/${encodeURIComponent(round.id)}/publish`)">Publicar resultados</button></div>
             <template v-if="!round || round.status === 'published' || round.status === 'closed'">
               <form @submit.prevent="createRound"><label>Tipo de proceso<select v-model="roundCategory"><option value="office">Cargo</option><option value="committee">Comisión temporal</option></select></label><label>{{ roundCategory === 'committee' ? 'Nombre de la comisión o proceso' : 'Título o cargo' }}<input v-model="roundTitle" required :placeholder="roundCategory === 'committee' ? 'Ej. Comisión de Finanzas' : 'Ej. Elección de presidencia'" /></label>
                 <template v-if="roundCategory === 'committee'">
@@ -957,5 +959,5 @@ onUnmounted(() => { if (refreshTimer) window.clearInterval(refreshTimer); realti
       </section>
     </template>
   </main>
-  <footer v-if="role !== 'projector'"><span>V1 · Herramienta operativa de la Asamblea</span><button v-if="role === 'moderator' || !sessionToken" class="link-button" @click="refresh">Sincronizar estado</button></footer>
+  <footer v-if="role !== 'projector'"><span>V1 · Herramienta operativa de la Asamblea</span><button class="link-button" @click="refresh">Sincronizar estado</button></footer>
 </template>
