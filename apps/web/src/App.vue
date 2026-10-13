@@ -24,10 +24,13 @@ const error = ref('')
 const notice = ref('')
 const state = ref<PublicState | null>(null)
 const urlParams = new URLSearchParams(window.location.search)
-const code = ref(urlParams.get('join') || urlParams.get('code') || localStorage.getItem('assemblyJoinCode') || '')
+const incomingJoinCode = urlParams.get('join') || urlParams.get('code') || ''
+const code = ref(incomingJoinCode || localStorage.getItem('assemblyJoinCode') || '')
 const firstName = ref('')
 const lastName = ref('')
 const sessionToken = ref(localStorage.getItem('participantSessionToken') || '')
+const sessionAssemblyId = ref(localStorage.getItem('participantAssemblyId') || '')
+const pendingJoinCode = ref('')
 const moderatorToken = ref(sessionStorage.getItem('moderatorToken') || '')
 const moderatorAuthState = ref<'unauthenticated' | 'validating' | 'authenticated' | 'validation_error'>(moderatorToken.value ? 'validating' : 'unauthenticated')
 const moderatorCredential = ref('')
@@ -93,6 +96,19 @@ function isUnauthorized(e: unknown) {
   return e instanceof ApiRequestError && e.status === 401
 }
 
+function clearParticipantSession() {
+  sessionToken.value = ''
+  sessionAssemblyId.value = ''
+  state.value = null
+  selectedOption.value = ''
+  reviewingVote.value = false
+  voteSubmitting.value = false
+  firstName.value = ''
+  lastName.value = ''
+  localStorage.removeItem('participantSessionToken')
+  localStorage.removeItem('participantAssemblyId')
+}
+
 function normalizeState(value: Record<string, any>): PublicState {
   const rawRound = value.currentRound || value.openRound || value.round || value.rounds?.at(-1) || null
   const options = rawRound?.options?.map((option: any) => ({ id: option.id || option.optionId, label: option.label }))
@@ -122,14 +138,36 @@ async function refresh() {
   if (loading.value) return
   if (role.value === 'participant' && sessionToken.value) {
     loading.value = true
+    const requestToken = sessionToken.value
     try {
-      state.value = normalizeState(await request<Record<string, any>>('/participant/me', {}, sessionToken.value))
-    } catch (e) {
-      if ((e as Error).message.includes('401') || (e as Error).message.toLowerCase().includes('sesión')) {
-        sessionToken.value = ''
-        localStorage.removeItem('participantSessionToken')
+      const participantState = await request<Record<string, any>>('/participant/me', {}, requestToken)
+      if (sessionToken.value !== requestToken) return
+      state.value = normalizeState(participantState)
+      const participantAssemblyId = String(participantState.assembly?.id || sessionAssemblyId.value)
+      if (participantAssemblyId) {
+        sessionAssemblyId.value = participantAssemblyId
+        localStorage.setItem('participantAssemblyId', participantAssemblyId)
       }
-      error.value = (e as Error).message
+      if (incomingJoinCode && participantAssemblyId) {
+        const target = await request<Record<string, any>>(`/assemblies/${encodeURIComponent(incomingJoinCode)}/public-state`)
+        const targetAssemblyId = String(target.assembly?.id || '')
+        if (targetAssemblyId && targetAssemblyId !== participantAssemblyId) {
+          pendingJoinCode.value = incomingJoinCode
+          state.value = null
+        }
+        else {
+          pendingJoinCode.value = ''
+          code.value = incomingJoinCode
+        }
+      }
+    } catch (e) {
+      if (sessionToken.value !== requestToken) return
+      if (isUnauthorized(e) || (e as Error).message.toLowerCase().includes('sesión')) {
+        clearParticipantSession()
+        error.value = 'La sesión de delegado ya no está activa. Puedes ingresar de nuevo.'
+      } else {
+        error.value = (e as Error).message
+      }
     } finally { loading.value = false }
   } else if (role.value === 'projector' && code.value) {
     loading.value = true
@@ -195,12 +233,31 @@ async function join() {
       method: 'POST', body: JSON.stringify({ firstName: firstName.value.trim(), lastName: lastName.value.trim() }),
     })
     sessionToken.value = joined.participantSessionToken
+    sessionAssemblyId.value = String(joined.assembly?.id || '')
     localStorage.setItem('participantSessionToken', joined.participantSessionToken)
+    if (sessionAssemblyId.value) localStorage.setItem('participantAssemblyId', sessionAssemblyId.value)
+    pendingJoinCode.value = ''
     state.value = normalizeState(joined)
     notice.value = 'Te uniste a la sala. Tu teléfono queda en espera.'
     await refresh()
   } catch (e) { error.value = (e as Error).message }
   finally { loading.value = false }
+}
+
+function leaveParticipantSession() {
+  clearParticipantSession()
+  pendingJoinCode.value = ''
+  error.value = ''
+  notice.value = 'Saliste de la sesión. Puedes ingresar otro delegado en este dispositivo.'
+}
+
+function switchToIncomingAssembly() {
+  if (!pendingJoinCode.value) return
+  code.value = pendingJoinCode.value
+  clearParticipantSession()
+  pendingJoinCode.value = ''
+  error.value = ''
+  notice.value = 'La sesión anterior se cerró en este dispositivo. Ingresa tus datos para unirte a la Asamblea del QR.'
 }
 
 function reviewVote() {
@@ -402,6 +459,11 @@ onUnmounted(() => { if (refreshTimer) window.clearInterval(refreshTimer); realti
         <p class="privacy-note">El ingreso por nombre facilita el control en sala, pero no acredita identidad ni condición de delegado.</p>
       </section>
       <section v-else class="card participant-card">
+        <div class="participant-session-actions"><button class="link-button" @click="leaveParticipantSession">Salir / cambiar de participante</button></div>
+        <div v-if="pendingJoinCode" class="notice error" role="alert">
+          Este QR corresponde a otra Asamblea. La sesión actual sigue abierta en este dispositivo.
+          <button class="secondary" @click="switchToIncomingAssembly">Cerrar sesión y cambiar a la Asamblea del QR</button>
+        </div>
         <p class="eyebrow">{{ state?.assembly?.name || 'ASAMBLEA' }}</p>
         <h1>{{ assemblyStatus === 'completed' ? 'Asamblea finalizada' : round?.status === 'open' ? round.title : 'Sala de espera' }}</h1>
         <div v-if="assemblyStatus === 'completed'" class="status-panel assembly-completed" role="status"><span class="status-dot"></span><div><strong>La sesión concluyó</strong><p>Esta Asamblea está en modo de consulta.<template v-if="completionTime"> Se finalizó {{ completionTime }}.</template></p></div></div>

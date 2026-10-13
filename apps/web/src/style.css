@@ -116,6 +116,7 @@ button:not(:disabled):active { transform: translateY(1px); }
 .results-list strong { color: var(--blue); }
 footer { display: flex; justify-content: space-between; gap: 1rem; padding: 1rem max(1.25rem, calc((100vw - 1000px) / 2)); color: #758198; font-size: .78rem; }
 .link-button { min-height: auto; padding: 0; background: transparent; color: var(--blue); }
+.participant-session-actions { display: flex; justify-content: flex-end; margin-bottom: 1rem; }
 
 @media (max-width: 650px) {
   .topbar { align-items: flex-start; flex-direction: column; padding: .8rem 1rem; }
