@@ -32,6 +32,11 @@ enum RoundStatus {
   published
 }
 
+enum RoundCategory {
+  office
+  committee
+}
+
 model Organization {
   id         String           @id @default(uuid()) @db.Uuid
   name       String
@@ -80,6 +85,10 @@ model Round {
   assemblyId     String          @map("assembly_id") @db.Uuid
   title          String
   format         String          @default("single_choice")
+  category       RoundCategory   @default(office)
+  committeeType  String?         @map("committee_type")
+  memberCount    Int?            @map("member_count")
+  decisionNote   String?         @map("decision_note")
   countingRule   Json            @map("counting_rule")
   status         RoundStatus     @default(draft)
   openedAt       DateTime?       @map("opened_at")

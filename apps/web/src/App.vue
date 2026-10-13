@@ -16,7 +16,7 @@ type PublicState = {
   results?: Array<{ label: string; count: number }>
   officialResult?: { elected: Array<{ optionId: string; label: string }>; note: string | null; declaredAt: string }
   rounds?: Array<{
-    id: string; title: string; status: string; options: Array<{ id: string; label: string }>
+    id: string; title: string; status: string; category?: 'office' | 'committee'; committeeType?: string | null; memberCount?: number | null; decisionNote?: string | null; options: Array<{ id: string; label: string }>
     results?: Array<{ optionId: string; label: string; count: number }>
     officialResult?: { elected: Array<{ optionId: string; label: string }>; note: string | null; declaredBy: string; declaredAt: string; publishedAt: string | null } | null
   }>
@@ -44,6 +44,10 @@ const assemblyId = ref(sessionStorage.getItem('assemblyId') || '')
 const assemblyName = ref('Asamblea de Delegados')
 const roundTitle = ref('')
 const optionsText = ref('')
+const roundCategory = ref<'office' | 'committee'>('office')
+const committeeType = ref('nomination')
+const committeeMemberCount = ref<number | null>(null)
+const committeeDecisionNote = ref('')
 const selectedOption = ref('')
 const reviewingVote = ref(false)
 const voteSubmitting = ref(false)
@@ -385,6 +389,8 @@ async function createRound() {
   const apiOptions = options.map((label) => ({ label }))
   await moderatorAction(`/moderator/assemblies/${encodeURIComponent(assemblyId.value)}/rounds`, 'POST', {
     title: roundTitle.value, format: 'single_choice', options: apiOptions,
+    category: roundCategory.value,
+    ...(roundCategory.value === 'committee' ? { committeeType: committeeType.value, ...(committeeMemberCount.value ? { memberCount: committeeMemberCount.value } : {}), decisionNote: committeeDecisionNote.value } : {}),
     countingRule: { kind: 'count_only', label: 'Conteo agregado por opción; sin proclamación automática' },
   })
 }
@@ -572,7 +578,9 @@ onUnmounted(() => { if (refreshTimer) window.clearInterval(refreshTimer); realti
           </section>
           <section class="card"><p class="eyebrow">PAPELETA</p><h2>{{ round?.title || 'Preparar votación' }}</h2>
             <template v-if="!round || round.status === 'published' || round.status === 'closed'">
-              <form @submit.prevent="createRound"><label>Título o cargo<input v-model="roundTitle" required placeholder="Ej. Elección de presidencia" /></label><label>Opciones o candidatos <span class="hint">Una por línea</span><textarea v-model="optionsText" rows="4" required placeholder="Nombre o descripción de cada opción"></textarea></label><button class="primary" :disabled="loading">Preparar papeleta</button></form>
+              <form @submit.prevent="createRound"><label>Tipo de proceso<select v-model="roundCategory"><option value="office">Cargo</option><option value="committee">Comisión temporal</option></select></label><label>{{ roundCategory === 'committee' ? 'Nombre de la comisión o proceso' : 'Título o cargo' }}<input v-model="roundTitle" required :placeholder="roundCategory === 'committee' ? 'Ej. Comisión de Finanzas' : 'Ej. Elección de presidencia'" /></label>
+                <template v-if="roundCategory === 'committee'"><label>Tipo de comisión<select v-model="committeeType"><option value="nomination">Nombramiento</option><option value="finance">Finanzas</option><option value="statutes">Estatutos</option><option value="plans">Planes</option><option value="other">Otra comisión autorizada</option></select></label><label>Número de integrantes <span class="hint">Déjalo vacío si está pendiente de decisión</span><input v-model.number="committeeMemberCount" type="number" min="1" :max="committeeType === 'nomination' ? 99 : 5" :step="committeeType === 'nomination' ? 2 : 1" placeholder="Configurar según Secretaría/mesa" /></label><label>Decisión/validación de Secretaría o mesa<textarea v-model="committeeDecisionNote" rows="2" maxlength="1000" placeholder="Método, elegibilidad o configuración pendiente"></textarea></label><p class="status-line">El voto permanece secreto. No se presume un método ni elegibilidad para otras comisiones; registra integrantes mediante el resultado oficial.</p></template>
+                <label>Opciones, candidaturas o integrantes <span class="hint">Una por línea</span><textarea v-model="optionsText" rows="4" required placeholder="Nombre o descripción de cada opción"></textarea></label><button class="primary" :disabled="loading">Preparar papeleta</button></form>
             </template>
             <p v-if="round?.status === 'draft'" class="status-line">Papeleta preparada. Revisa las opciones antes de abrir.</p>
             <p v-if="round?.status === 'closed'" class="status-line">La papeleta está cerrada. Los resultados siguen ocultos hasta publicarlos.</p>
@@ -585,7 +593,7 @@ onUnmounted(() => { if (refreshTimer) window.clearInterval(refreshTimer); realti
           <section v-if="state?.rounds?.length" class="card official-history">
             <p class="eyebrow">ACTA DE RESULTADOS</p><h2>Declaraciones oficiales de la mesa</h2>
             <article v-for="historyRound in state.rounds" :key="historyRound.id" class="official-round">
-              <div class="section-heading"><div><h3>{{ historyRound.title }}</h3><p class="status-line">Conteo: {{ historyRound.status === 'published' ? 'publicado' : historyRound.status === 'closed' ? 'cerrado' : historyRound.status }}</p></div></div>
+              <div class="section-heading"><div><h3>{{ historyRound.title }}</h3><p class="status-line">{{ historyRound.category === 'committee' ? `Comisión · ${historyRound.committeeType} · ${historyRound.memberCount ?? 'tamaño pendiente'}` : 'Cargo' }} · conteo {{ historyRound.status === 'published' ? 'publicado' : historyRound.status === 'closed' ? 'cerrado' : historyRound.status }}</p><p v-if="historyRound.decisionNote" class="status-line">Configuración institucional: {{ historyRound.decisionNote }}</p></div></div>
               <div v-if="historyRound.results?.length" class="results-list compact-results">
                 <div v-for="result in historyRound.results" :key="result.optionId"><span>{{ result.label }}</span><strong>{{ result.count }}</strong></div>
               </div>

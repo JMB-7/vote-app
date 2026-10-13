@@ -63,6 +63,18 @@ export class CreateRoundDto {
   @IsOptional() @Equals('single_choice')
   format: 'single_choice' = 'single_choice'
 
+  @IsOptional() @IsIn(['office', 'committee'])
+  category?: 'office' | 'committee'
+
+  @IsOptional() @IsIn(['nomination', 'finance', 'statutes', 'plans', 'other'])
+  committeeType?: 'nomination' | 'finance' | 'statutes' | 'plans' | 'other'
+
+  @IsOptional() @IsInt() @Min(1)
+  memberCount?: number
+
+  @IsOptional() @IsString() @MaxLength(1000)
+  decisionNote?: string
+
   @IsArray() @ArrayMinSize(1) @ArrayMaxSize(40) @ValidateNested({ each: true }) @Type(() => BallotOptionDto)
   options!: BallotOptionDto[]
 

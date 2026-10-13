@@ -106,7 +106,7 @@ export class VotingService {
         })
       : null
     const openRound = round
-      ? { roundId: round.id, status: round.status, title: round.title, options: round.options.map((o) => ({ optionId: o.id, label: o.label })) }
+      ? { roundId: round.id, status: round.status, title: round.title, category: round.category, committeeType: round.committeeType, memberCount: round.memberCount, decisionNote: round.decisionNote, options: round.options.map((o) => ({ optionId: o.id, label: o.label })) }
       : null
     const results = round?.status === 'published' ? await this.publishedResults(round.id) : undefined
     const officialResult = round?.status === 'published' ? await this.publishedOfficialResult(round.id) : null
@@ -177,7 +177,7 @@ export class VotingService {
     return {
       assembly: { id: assembly.id, name: assembly.name, status: assembly.status, completedAt: assembly.completedAt?.toISOString() ?? null },
       participantCount,
-      round: round ? { id: round.id, title: round.title, status: round.status } : null,
+      round: round ? { id: round.id, title: round.title, status: round.status, category: round.category, committeeType: round.committeeType, memberCount: round.memberCount, decisionNote: round.decisionNote } : null,
       ...(result ? { results: result } : {}),
       ...(officialResult ? { officialResult } : {}),
     }
@@ -196,6 +196,10 @@ export class VotingService {
       id: round.id,
       title: round.title,
       format: round.format,
+      category: round.category,
+      committeeType: round.committeeType,
+      memberCount: round.memberCount,
+      decisionNote: round.decisionNote,
       countingRule: round.countingRule,
       status: round.status,
       options: round.options,
@@ -304,6 +308,19 @@ export class VotingService {
   }
 
   async createRound(assemblyId: string, input: CreateRoundDto) {
+    const category = input.category ?? 'office'
+    if (category === 'committee' && !input.committeeType) {
+      throw new UnprocessableEntityException('Selecciona el tipo de comisión')
+    }
+    if (category === 'office' && (input.committeeType || input.memberCount !== undefined)) {
+      throw new UnprocessableEntityException('Los metadatos de comisión solo aplican a rondas de comisión')
+    }
+    if (category === 'committee' && input.committeeType === 'nomination' && input.memberCount !== undefined && (input.memberCount < 5 || input.memberCount % 2 === 0)) {
+      throw new UnprocessableEntityException('La Comisión de Nombramiento requiere un número impar de al menos cinco integrantes')
+    }
+    if (category === 'committee' && ['finance', 'statutes'].includes(input.committeeType ?? '') && input.memberCount !== undefined && ![3, 5].includes(input.memberCount)) {
+      throw new UnprocessableEntityException('Finanzas y Estatutos admiten tres o cinco integrantes')
+    }
     if (!input.countingRule || Array.isArray(input.countingRule) || Object.keys(input.countingRule).length === 0) {
       throw new UnprocessableEntityException('countingRule debe declarar explícitamente la regla configurada')
     }
@@ -325,6 +342,10 @@ export class VotingService {
           assemblyId,
           title: input.title.trim(),
           format: 'single_choice',
+          category,
+          committeeType: category === 'committee' ? input.committeeType : null,
+          memberCount: category === 'committee' ? input.memberCount ?? null : null,
+          decisionNote: category === 'committee' ? input.decisionNote?.trim() || null : null,
           countingRule: input.countingRule as Prisma.InputJsonValue,
           options: { create: labels.map((label, order) => ({ label, order })) },
         },
@@ -333,7 +354,7 @@ export class VotingService {
       await tx.auditEvent.create({ data: { assemblyId, roundId: created.id, actorRef: MODERATOR_ACTOR, action: 'round.prepared' } })
       return created
     })
-    return { id: round.id, title: round.title, format: round.format, countingRule: round.countingRule, status: round.status, options: round.options }
+    return { id: round.id, title: round.title, format: round.format, category: round.category, committeeType: round.committeeType, memberCount: round.memberCount, decisionNote: round.decisionNote, countingRule: round.countingRule, status: round.status, options: round.options }
   }
 
   async openRound(roundId: string) {
@@ -429,13 +450,16 @@ export class VotingService {
     if (optionIds.length !== input.optionIds.length) throw new UnprocessableEntityException('No repitas opciones en el resultado declarado')
     const note = input.note?.trim() || null
     const declared = await this.prisma.$transaction(async (tx) => {
-      const rows = await tx.$queryRaw<Array<{ id: string; assembly_id: string; status: string }>>`
-        SELECT id, assembly_id, status FROM rounds WHERE id = ${roundId}::uuid FOR UPDATE
+      const rows = await tx.$queryRaw<Array<{ id: string; assembly_id: string; status: string; category: string; member_count: number | null }>>`
+        SELECT id, assembly_id, status, category, member_count FROM rounds WHERE id = ${roundId}::uuid FOR UPDATE
       `
       const round = rows[0]
       if (!round) throw new NotFoundException('Ronda no encontrada')
       await tx.$queryRaw`SELECT id FROM assemblies WHERE id = ${round.assembly_id}::uuid FOR UPDATE`
       if (round.status !== 'closed' && round.status !== 'published') throw new ConflictException('Cierra la papeleta antes de registrar el resultado oficial')
+      if (round.category === 'committee' && round.member_count !== null && optionIds.length !== round.member_count) {
+        throw new UnprocessableEntityException(`Selecciona exactamente ${round.member_count} integrantes para la comisión`)
+      }
       const options = await tx.ballotOption.findMany({ where: { roundId, id: { in: optionIds } }, select: { id: true, label: true } })
       if (options.length !== optionIds.length) throw new UnprocessableEntityException('Todas las opciones declaradas deben pertenecer a esta papeleta')
       const current = await tx.officialResult.findUnique({
