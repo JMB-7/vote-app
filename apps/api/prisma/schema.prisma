@@ -32,6 +32,30 @@ enum RoundStatus {
   published
 }
 
+enum RoundCategory {
+  office
+  committee
+}
+
+enum CommitteeStage {
+  configuration_required
+  proposals
+  support
+  approval
+  election
+  tie_break_required
+  tie_break
+  composition_ready
+}
+
+enum AssemblyRole {
+  president
+  vice_president
+  secretary
+  treasurer
+  delegate
+}
+
 model Organization {
   id         String           @id @default(uuid()) @db.Uuid
   name       String
@@ -67,9 +91,16 @@ model ParticipantSession {
   lastName       String            @map("last_name")
   tokenHash      String            @unique @map("token_hash") @db.Char(64)
   status         ParticipantStatus @default(active)
+  assemblyRole   AssemblyRole?     @map("assembly_role")
+  committeeEligible Boolean        @default(false) @map("committee_eligible")
   joinedAt       DateTime          @default(now()) @map("joined_at")
   assembly       Assembly          @relation(fields: [assemblyId], references: [id], onDelete: Cascade)
   participations Participation[]
+  candidateOptions BallotOption[] @relation("committee_candidates")
+  proposedCommittees CommitteeProposal[] @relation("committee_candidate")
+  submittedProposals CommitteeProposal[] @relation("committee_proposer")
+  supportedProposals CommitteeProposalSupport[]
+  committeeWinners CommitteeWinner[]
 
   @@index([assemblyId, status])
   @@map("participant_sessions")
@@ -80,6 +111,14 @@ model Round {
   assemblyId     String          @map("assembly_id") @db.Uuid
   title          String
   format         String          @default("single_choice")
+  category       RoundCategory   @default(office)
+  committeeType  String?         @map("committee_type")
+  memberCount    Int?            @map("member_count")
+  decisionNote   String?         @map("decision_note")
+  committeeStage CommitteeStage? @map("committee_stage")
+  committeeConfiguration Json?   @map("committee_configuration")
+  electionSeats  Int?             @map("election_seats")
+  committeeRootRoundId String?    @map("committee_root_round_id") @db.Uuid
   countingRule   Json            @map("counting_rule")
   status         RoundStatus     @default(draft)
   openedAt       DateTime?       @map("opened_at")
@@ -92,6 +131,11 @@ model Round {
   votes          AnonymousVote[]
   officialResult OfficialResult?
   auditEvents    AuditEvent[]
+  committeeRoot Round? @relation("committee_rounds", fields: [committeeRootRoundId], references: [id], onDelete: Cascade)
+  committeeRounds Round[] @relation("committee_rounds")
+  committeeProposals CommitteeProposal[]
+  committeeWinners CommitteeWinner[] @relation("committee_winners")
+  committeeWinnerSources CommitteeWinner[] @relation("committee_winner_source")
 
   @@index([assemblyId, status])
   @@map("rounds")
@@ -125,13 +169,59 @@ model BallotOption {
   roundId         String                 @map("round_id") @db.Uuid
   label           String
   order           Int
+  candidateParticipantId String? @map("candidate_participant_id") @db.Uuid
   round           Round                  @relation(fields: [roundId], references: [id], onDelete: Cascade)
   votes           AnonymousVote[]
   officialResults OfficialResultOption[]
+  candidateParticipant ParticipantSession? @relation("committee_candidates", fields: [candidateParticipantId], references: [id], onDelete: Restrict)
 
   @@unique([roundId, order])
   @@unique([roundId, id])
   @@map("ballot_options")
+}
+
+model CommitteeProposal {
+  id String @id @default(uuid()) @db.Uuid
+  roundId String @map("round_id") @db.Uuid
+  candidateParticipantId String @map("candidate_participant_id") @db.Uuid
+  proposedByParticipantId String @map("proposed_by_participant_id") @db.Uuid
+  status String @default("proposed")
+  approvalYes Int? @map("approval_yes")
+  approvalNo Int? @map("approval_no")
+  createdAt DateTime @default(now()) @map("created_at")
+  decidedAt DateTime? @map("decided_at")
+  round Round @relation(fields: [roundId], references: [id], onDelete: Cascade)
+  candidate ParticipantSession @relation("committee_candidate", fields: [candidateParticipantId], references: [id], onDelete: Restrict)
+  proposedBy ParticipantSession @relation("committee_proposer", fields: [proposedByParticipantId], references: [id], onDelete: Restrict)
+  supporters CommitteeProposalSupport[]
+
+  @@unique([roundId, candidateParticipantId])
+  @@map("committee_proposals")
+}
+
+model CommitteeProposalSupport {
+  proposalId String @map("proposal_id") @db.Uuid
+  supporterParticipantId String @map("supporter_participant_id") @db.Uuid
+  supportedAt DateTime @default(now()) @map("supported_at")
+  proposal CommitteeProposal @relation(fields: [proposalId], references: [id], onDelete: Cascade)
+  supporter ParticipantSession @relation(fields: [supporterParticipantId], references: [id], onDelete: Cascade)
+
+  @@id([proposalId, supporterParticipantId])
+  @@map("committee_proposal_supports")
+}
+
+model CommitteeWinner {
+  rootRoundId String @map("root_round_id") @db.Uuid
+  candidateParticipantId String @map("candidate_participant_id") @db.Uuid
+  sourceRoundId String @map("source_round_id") @db.Uuid
+  order Int
+  rootRound Round @relation("committee_winners", fields: [rootRoundId], references: [id], onDelete: Cascade)
+  candidate ParticipantSession @relation(fields: [candidateParticipantId], references: [id], onDelete: Restrict)
+  sourceRound Round @relation("committee_winner_source", fields: [sourceRoundId], references: [id], onDelete: Cascade)
+
+  @@id([rootRoundId, candidateParticipantId])
+  @@unique([rootRoundId, order])
+  @@map("committee_winners")
 }
 
 model Participation {
