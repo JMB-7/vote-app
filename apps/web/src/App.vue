@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import QRCode from 'qrcode'
 import { io, type Socket } from 'socket.io-client'
 
@@ -35,6 +35,9 @@ const assemblyName = ref('Asamblea de Delegados')
 const roundTitle = ref('')
 const optionsText = ref('')
 const selectedOption = ref('')
+const reviewingVote = ref(false)
+const voteSubmitting = ref(false)
+const reviewHeading = ref<HTMLElement | null>(null)
 const qrImage = ref('')
 let refreshTimer: number | undefined
 let realtimeSocket: Socket | null = null
@@ -43,6 +46,11 @@ const role = computed(() => route.value.startsWith('/moderator') ? 'moderator' :
 const assemblyStatus = computed(() => state.value?.assembly?.status || state.value?.status || 'preparing')
 const lobbyStatus = computed(() => state.value?.assembly?.lobbyStatus || (state.value?.lobbyStatus === 'open' || assemblyStatus.value === 'lobby_open' ? 'lobby_open' : 'lobby_closed'))
 const round = computed(() => state.value?.currentRound)
+const reviewedOption = computed(() => round.value?.options?.find((option) => option.id === selectedOption.value))
+
+watch(reviewingVote, (reviewing) => {
+  if (reviewing) void nextTick(() => reviewHeading.value?.focus())
+})
 
 function go(path: string) {
   const enteringModerator = path.startsWith('/moderator')
@@ -190,9 +198,18 @@ async function join() {
   finally { loading.value = false }
 }
 
-async function submitVote() {
-  if (!round.value || !selectedOption.value || !window.confirm('¿Confirmas tu selección? Después de confirmar no podrás cambiarla.')) return
+function reviewVote() {
+  if (!round.value || !selectedOption.value || !reviewedOption.value || loading.value || voteSubmitting.value) return
   error.value = ''
+  notice.value = ''
+  reviewingVote.value = true
+}
+
+async function submitVote() {
+  if (!round.value || !selectedOption.value || !reviewedOption.value || !reviewingVote.value || loading.value || voteSubmitting.value) return
+  error.value = ''
+  notice.value = ''
+  voteSubmitting.value = true
   loading.value = true
   let accepted = false
   try {
@@ -201,9 +218,10 @@ async function submitVote() {
     }, sessionToken.value)
     notice.value = 'Tu participación fue registrada. Gracias.'
     selectedOption.value = ''
+    reviewingVote.value = false
     accepted = true
   } catch (e) { error.value = (e as Error).message }
-  finally { loading.value = false }
+  finally { loading.value = false; voteSubmitting.value = false }
   if (accepted) await refresh()
 }
 
@@ -367,12 +385,27 @@ onUnmounted(() => { if (refreshTimer) window.clearInterval(refreshTimer); realti
         <template v-if="state?.participationStatus === 'recorded'">
           <div class="status-panel"><span class="status-dot"></span><div><strong>Tu participación está registrada</strong><p>La papeleta fue confirmada y no puede cambiarse. No se muestra aquí la opción seleccionada.</p></div></div>
         </template>
+        <template v-else-if="round?.status === 'open' && round.options?.length && reviewingVote">
+          <section class="vote-review" aria-labelledby="vote-review-title">
+            <p class="eyebrow">REVISIÓN DEL VOTO</p>
+            <h2 id="vote-review-title" ref="reviewHeading" tabindex="-1">Confirma tu selección</h2>
+            <dl class="review-details">
+              <div><dt>Papeleta</dt><dd>{{ round.title }}</dd></div>
+              <div><dt>Opción seleccionada</dt><dd>{{ reviewedOption?.label || 'La opción seleccionada ya no está disponible.' }}</dd></div>
+            </dl>
+            <p class="privacy-note">Después de confirmar, tu voto será definitivo y no podrás cambiarlo.</p>
+            <div class="review-actions">
+              <button class="secondary" :disabled="loading" @click="reviewingVote = false">Volver a la papeleta</button>
+              <button class="primary" :disabled="loading || !reviewedOption" @click="submitVote">{{ voteSubmitting ? 'Enviando voto…' : 'Confirmar voto' }}</button>
+            </div>
+          </section>
+        </template>
         <template v-else-if="round?.status === 'open' && round.options?.length">
           <p class="lead">Selecciona una opción, revísala y confirma cuando estés listo.</p>
           <fieldset class="options"><legend>Opciones de la papeleta</legend>
             <label v-for="option in round.options" :key="option.id" class="option"><input v-model="selectedOption" type="radio" name="option" :value="option.id" /><span>{{ option.label }}</span></label>
           </fieldset>
-          <button class="primary" :disabled="loading || !selectedOption" @click="submitVote">Revisar y confirmar voto</button>
+          <button class="primary" :disabled="loading || voteSubmitting || !selectedOption" @click="reviewVote">Revisar y confirmar voto</button>
           <p class="privacy-note">Tu selección es definitiva después de confirmarla.</p>
         </template>
         <div v-else class="status-panel"><span class="status-dot"></span><div><strong>{{ round?.status === 'closed' ? 'La papeleta está cerrada' : 'Esperando la siguiente papeleta' }}</strong><p>La mesa anunciará cuando comience la votación.</p></div></div>

@@ -65,6 +65,15 @@ button:not(:disabled):active { transform: translateY(1px); }
 .option { display: flex; min-height: 58px; align-items: center; gap: .8rem; padding: .8rem 1rem; border: 1px solid var(--line); border-radius: .7rem; cursor: pointer; }
 .option:has(input:checked) { border-color: var(--blue); background: #f2f6ff; }
 .option input { width: 1.15rem; height: 1.15rem; accent-color: var(--blue); }
+.vote-review { padding: 1.25rem; border: 1px solid #cbd8ef; border-radius: .85rem; background: #f7f9fe; }
+.vote-review h2 { margin-bottom: 1.25rem; }
+.vote-review h2:focus { outline-offset: 5px; }
+.review-details { display: grid; gap: .75rem; margin: 0; }
+.review-details div { padding: .85rem 1rem; border: 1px solid var(--line); border-radius: .65rem; background: #fff; }
+.review-details dt { margin-bottom: .3rem; color: var(--muted); font-size: .78rem; font-weight: 700; }
+.review-details dd { margin: 0; color: var(--blue-dark); font-size: 1.05rem; font-weight: 750; overflow-wrap: anywhere; }
+.review-actions { display: flex; flex-wrap: wrap; gap: .75rem; margin-top: 1.25rem; }
+.review-actions button { min-height: 48px; }
 .page-heading { padding: 0 .2rem 1rem; }
 .page-heading > p:last-child { color: var(--muted); }
 .summary-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1rem; }
@@ -113,6 +122,9 @@ footer { display: flex; justify-content: space-between; gap: 1rem; padding: 1rem
   .field-row, .summary-grid { grid-template-columns: 1fr; }
   .section-heading { align-items: flex-start; flex-direction: column; }
   .join-card { margin: 4vh auto; }
+  .vote-review { padding: 1rem; }
+  .review-actions { flex-direction: column-reverse; }
+  .review-actions button { width: 100%; }
   .projector-page { width: 100%; }
   footer { padding: .8rem 1rem; }
 }

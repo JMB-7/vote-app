@@ -20,6 +20,10 @@ function participantState(participationStatus: 'pending' | 'recorded' = 'pending
 
 test('delegado ingresa con datos sintéticos y confirma su participación', async ({ page }) => {
   let voteCount = 0
+  let releaseVote: (() => void) | undefined
+  let markVoteStarted: (() => void) | undefined
+  const votePending = new Promise<void>((resolve) => { releaseVote = resolve })
+  const voteStarted = new Promise<void>((resolve) => { markVoteStarted = resolve })
   await page.route(api, async (route) => {
     const request = route.request()
     const url = new URL(request.url())
@@ -33,6 +37,8 @@ test('delegado ingresa con datos sintéticos y confirma su participación', asyn
     }
     if (request.method() === 'POST' && url.pathname.endsWith('/participant/rounds/synthetic-round/vote')) {
       voteCount += 1
+      markVoteStarted?.()
+      await votePending
       await route.fulfill({ status: 201, json: { status: 'recorded' } })
       return
     }
@@ -49,13 +55,73 @@ test('delegado ingresa con datos sintéticos y confirma su participación', asyn
   await expect(page.getByText('Tu teléfono queda en espera.')).toBeVisible()
 
   await page.getByLabel('Opción Alfa (prueba)').check()
-  page.once('dialog', (dialog) => dialog.accept())
   await page.getByRole('button', { name: 'Revisar y confirmar voto' }).click()
+  await expect(page.getByRole('heading', { name: 'Confirma tu selección' })).toBeFocused()
+  await expect(page.locator('.review-details').getByText('Elección de prueba', { exact: true })).toBeVisible()
+  await expect(page.locator('.review-details').getByText('Opción Alfa (prueba)', { exact: true })).toBeVisible()
+  await page.getByRole('button', { name: 'Volver a la papeleta' }).click()
+  await expect(page.getByLabel('Opción Alfa (prueba)')).toBeChecked()
+  expect(voteCount).toBe(0)
+
+  await page.getByLabel('Opción Beta (prueba)').check()
+  await page.getByRole('button', { name: 'Revisar y confirmar voto' }).click()
+  await expect(page.locator('.review-details').getByText('Opción Beta (prueba)', { exact: true })).toBeVisible()
+  await page.getByRole('button', { name: 'Confirmar voto' }).click()
+  await voteStarted
+  await expect(page.getByRole('button', { name: 'Enviando voto…' })).toBeDisabled()
+  expect(voteCount).toBe(1)
+  releaseVote?.()
 
   await expect(page.getByText('Tu participación fue registrada. Gracias.')).toBeVisible()
   await page.getByRole('button', { name: 'Sincronizar estado' }).click()
   await expect(page.getByText('Tu participación está registrada')).toBeVisible()
   expect(voteCount).toBe(1)
+})
+
+test('un error de red conserva la selección y permite revisar y reintentar', async ({ page }) => {
+  let voteCount = 0
+  await page.route(api, async (route) => {
+    const request = route.request()
+    const url = new URL(request.url())
+    if (request.method() === 'POST' && url.pathname.endsWith('/assemblies/DEMO-ROOM/join')) {
+      await route.fulfill({ json: { participantSessionToken: 'synthetic-participant-token', ...participantState() } })
+      return
+    }
+    if (request.method() === 'GET' && url.pathname.endsWith('/participant/me')) {
+      await route.fulfill({ json: participantState(voteCount ? 'recorded' : 'pending') })
+      return
+    }
+    if (request.method() === 'POST' && url.pathname.endsWith('/participant/rounds/synthetic-round/vote')) {
+      voteCount += 1
+      if (voteCount === 1) {
+        await route.fulfill({ status: 503, json: { message: 'Conexión temporalmente no disponible' } })
+      } else {
+        await route.fulfill({ status: 201, json: { status: 'recorded' } })
+      }
+      return
+    }
+    await route.fulfill({ status: 404, json: { message: 'No mock route for synthetic UI test' } })
+  })
+
+  await page.goto('/')
+  await page.getByLabel('Código de sala').fill('DEMO-ROOM')
+  await page.getByLabel('Nombre').fill('Delegado')
+  await page.getByLabel('Apellido').fill('Sintético')
+  await page.getByRole('button', { name: 'Unirme a la sala' }).click()
+  await page.getByLabel('Opción Beta (prueba)').check()
+  await page.getByRole('button', { name: 'Revisar y confirmar voto' }).click()
+  await page.getByRole('button', { name: 'Confirmar voto' }).click()
+
+  await expect(page.getByRole('alert')).toContainText('Conexión temporalmente no disponible')
+  await expect(page.locator('.review-details').getByText('Opción Beta (prueba)', { exact: true })).toBeVisible()
+  await page.getByRole('button', { name: 'Volver a la papeleta' }).click()
+  await expect(page.getByLabel('Opción Beta (prueba)')).toBeChecked()
+  await page.getByRole('button', { name: 'Revisar y confirmar voto' }).click()
+  await expect(page.locator('.review-details').getByText('Elección de prueba', { exact: true })).toBeVisible()
+  await page.getByRole('button', { name: 'Confirmar voto' }).click()
+
+  await expect(page.getByText('Tu participación fue registrada. Gracias.')).toBeVisible()
+  expect(voteCount).toBe(2)
 })
 
 test('moderador ejecuta el cierre de una papeleta mediante acción confirmada', async ({ page }) => {
