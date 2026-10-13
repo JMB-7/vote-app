@@ -202,9 +202,19 @@ export class VotingService {
       },
     })
     if (!assembly) throw new NotFoundException('Asamblea no encontrada')
-    let [round, participantCount] = await Promise.all([
-      Promise.resolve(assembly.rounds[0]),
+    let round = assembly.rounds[0]
+    const [participantCount, participants, recordedCount] = await Promise.all([
       this.prisma.participantSession.count({ where: { assemblyId: assembly.id, status: 'active' } }),
+      assembly.status === 'lobby_open'
+        ? this.prisma.participantSession.findMany({
+            where: { assemblyId: assembly.id, status: 'active' },
+            orderBy: { joinedAt: 'asc' },
+            select: { firstName: true, lastName: true },
+          })
+        : Promise.resolve(undefined),
+      round && ['open', 'closed'].includes(round.status)
+        ? this.prisma.participation.count({ where: { roundId: round.id } })
+        : Promise.resolve(undefined),
     ])
     if (round?.committeeRootRoundId) {
       const root = await this.prisma.round.findUnique({ where: { id: round.committeeRootRoundId }, include: { options: { orderBy: { order: 'asc' } } } })
@@ -217,6 +227,8 @@ export class VotingService {
     return {
       assembly: { id: assembly.id, name: assembly.name, status: assembly.status, completedAt: assembly.completedAt?.toISOString() ?? null },
       participantCount,
+      ...(participants ? { participants } : {}),
+      ...(recordedCount !== undefined ? { recordedCount, eligibleCount: participantCount } : {}),
       round: round ? { id: round.id, title: round.title, status: round.status, format: round.format, category: round.category, committeeType: round.committeeType, memberCount: round.memberCount, decisionNote: round.decisionNote, committeeStage: round.committeeStage } : null,
       ...(result ? { results: result } : {}),
       ...(officialResult ? { officialResult } : {}),
