@@ -107,6 +107,43 @@ test('delegado conserva la sesión al recargar y puede salir limpiando el estado
   expect(await page.evaluate(() => localStorage.getItem('participantAssemblyId'))).toBeNull()
 })
 
+test('un 401 Unauthorized limpia la sesión y devuelve al ingreso del delegado', async ({ page }) => {
+  await page.addInitScript(() => {
+    localStorage.setItem('participantSessionToken', 'revoked-session-token')
+    localStorage.setItem('participantAssemblyId', 'assembly-a')
+  })
+  await page.route(api, async (route) => {
+    const url = new URL(route.request().url())
+    if (url.pathname.endsWith('/participant/me')) {
+      await route.fulfill({ status: 401, json: { message: 'Unauthorized' } })
+      return
+    }
+    await route.fulfill({ status: 404, json: { message: 'Not found' } })
+  })
+
+  await page.goto('/')
+  await expect(page.getByRole('heading', { name: 'Bienvenido' })).toBeVisible()
+  await expect(page.getByRole('alert')).toContainText('Vuelve a ingresar mientras el ingreso a la asamblea esté abierto')
+  expect(await page.evaluate(() => localStorage.getItem('participantSessionToken'))).toBeNull()
+  expect(await page.evaluate(() => localStorage.getItem('participantAssemblyId'))).toBeNull()
+})
+
+test('un error temporal al cargar la sesión conserva la credencial del delegado', async ({ page }) => {
+  await page.addInitScript(() => localStorage.setItem('participantSessionToken', 'valid-session-token'))
+  await page.route(api, async (route) => {
+    const url = new URL(route.request().url())
+    if (url.pathname.endsWith('/participant/me')) {
+      await route.fulfill({ status: 503, json: { message: 'Servicio temporalmente no disponible' } })
+      return
+    }
+    await route.fulfill({ status: 404, json: { message: 'Not found' } })
+  })
+
+  await page.goto('/')
+  await expect(page.getByRole('alert')).toContainText('Servicio temporalmente no disponible')
+  expect(await page.evaluate(() => localStorage.getItem('participantSessionToken'))).toBe('valid-session-token')
+})
+
 test('delegado debe confirmar el cambio cuando abre un QR de otra Asamblea', async ({ page }) => {
   await page.addInitScript(() => {
     localStorage.setItem('participantSessionToken', 'old-session-token')
