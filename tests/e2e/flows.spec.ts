@@ -231,6 +231,64 @@ test('moderador ejecuta el cierre de una papeleta mediante acción confirmada', 
   await expect(page.getByRole('button', { name: 'Publicar resultados' })).toBeVisible()
 })
 
+test('moderador declara el resultado oficial por separado y lo publica explícitamente', async ({ page }) => {
+  let officialResult: Record<string, unknown> | null = null
+  let publishCount = 0
+  await page.addInitScript(() => {
+    sessionStorage.setItem('moderatorToken', 'synthetic-moderator-token')
+    sessionStorage.setItem('assemblyId', 'synthetic-assembly')
+  })
+  await page.route(api, async (route) => {
+    const request = route.request()
+    const url = new URL(request.url())
+    if (request.method() === 'GET' && url.pathname.endsWith('/moderator/assemblies/synthetic-assembly')) {
+      await route.fulfill({ json: {
+        id: 'synthetic-assembly', name: 'Asamblea de prueba', status: 'in_progress',
+        rounds: [{
+          id: 'synthetic-round', title: 'Elección de prueba', status: 'published',
+          options: [{ id: 'a', label: 'Candidata Alfa' }, { id: 'b', label: 'Candidato Beta' }],
+          results: [{ optionId: 'a', label: 'Candidata Alfa', count: 2 }, { optionId: 'b', label: 'Candidato Beta', count: 1 }],
+          officialResult,
+        }],
+      } })
+      return
+    }
+    if (request.method() === 'PUT' && url.pathname.endsWith('/moderator/rounds/synthetic-round/official-result')) {
+      expect(request.postDataJSON()).toEqual({ optionIds: ['b'], note: 'Decisión de la Asamblea' })
+      officialResult = {
+        elected: [{ optionId: 'b', label: 'Candidato Beta' }], note: 'Decisión de la Asamblea',
+        declaredBy: 'shared_moderator_credential', declaredAt: '2026-10-13T10:00:00.000Z', publishedAt: null,
+      }
+      await route.fulfill({ status: 200, json: officialResult })
+      return
+    }
+    if (request.method() === 'POST' && url.pathname.endsWith('/moderator/rounds/synthetic-round/official-result/publish')) {
+      publishCount += 1
+      officialResult = { ...officialResult, publishedAt: '2026-10-13T10:05:00.000Z' }
+      await route.fulfill({ status: 200, json: officialResult })
+      return
+    }
+    await route.fulfill({ status: 404, json: { message: 'No mock route for official result test' } })
+  })
+
+  await page.goto('/moderator')
+  await expect(page.getByRole('heading', { name: 'Declaraciones oficiales de la mesa' })).toBeVisible()
+  await expect(page.getByText('La mesa aún no ha registrado una declaración oficial.')).toBeVisible()
+  await page.getByLabel('Candidato Beta').check()
+  await page.getByLabel('Observación o motivo (opcional)').fill('Decisión de la Asamblea')
+  page.once('dialog', (dialog) => dialog.accept())
+  await page.getByRole('button', { name: 'Registrar resultado oficial' }).click()
+  await expect(page.getByText('Declaración interna')).toBeVisible()
+  await expect(page.getByText('Decisión de la Asamblea')).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Publicar declaración' })).toBeVisible()
+  expect(publishCount).toBe(0)
+
+  page.once('dialog', (dialog) => dialog.accept())
+  await page.getByRole('button', { name: 'Publicar declaración' }).click()
+  await expect(page.getByText('Visible al público')).toBeVisible()
+  expect(publishCount).toBe(1)
+})
+
 test('moderador finaliza la Asamblea explícitamente y el panel queda en modo de consulta', async ({ page }) => {
   let roundClosed = false
   let assemblyCompleted = false

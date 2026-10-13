@@ -6,6 +6,7 @@ import {
   ParseUUIDPipe,
   Patch,
   Post,
+  Put,
   Req,
   UseGuards,
 } from '@nestjs/common'
@@ -20,6 +21,7 @@ import {
   JoinAssemblyDto,
   LobbyPatchDto,
   ParticipantPatchDto,
+  OfficialResultDto,
   VoteDto,
 } from './dtos.js'
 
@@ -114,5 +116,15 @@ export class ModeratorController {
   @Post('rounds/:roundId/publish')
   publishRound(@Param('roundId', ParseUUIDPipe) roundId: string) {
     return this.voting.publishRound(roundId)
+  }
+
+  @Put('rounds/:roundId/official-result')
+  officialResult(@Param('roundId', ParseUUIDPipe) roundId: string, @Body() input: OfficialResultDto) {
+    return this.voting.declareOfficialResult(roundId, input)
+  }
+
+  @Post('rounds/:roundId/official-result/publish')
+  publishOfficialResult(@Param('roundId', ParseUUIDPipe) roundId: string) {
+    return this.voting.publishOfficialResult(roundId)
   }
 }

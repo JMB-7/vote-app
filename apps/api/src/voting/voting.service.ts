@@ -11,7 +11,7 @@ import { hashCredential, newOpaqueCredential } from '../auth/credentials.js'
 import { MODERATOR_ACTOR } from '../auth/auth.service.js'
 import { RealtimeGateway } from '../realtime/realtime.gateway.js'
 import type { AssemblyStatus, RoundStatus } from '../generated/prisma/enums.js'
-import type { CreateRoundDto } from './dtos.js'
+import type { CreateRoundDto, OfficialResultDto } from './dtos.js'
 
 const ORGANIZATION_ID = '00000000-0000-4000-8000-000000000001'
 
@@ -109,6 +109,7 @@ export class VotingService {
       ? { roundId: round.id, status: round.status, title: round.title, options: round.options.map((o) => ({ optionId: o.id, label: o.label })) }
       : null
     const results = round?.status === 'published' ? await this.publishedResults(round.id) : undefined
+    const officialResult = round?.status === 'published' ? await this.publishedOfficialResult(round.id) : null
     return {
       assembly: { id: participant.assembly.id, name: participant.assembly.name, status: participant.assembly.status, completedAt: participant.assembly.completedAt?.toISOString() ?? null },
       assemblyStatus: participant.assembly.status,
@@ -117,6 +118,7 @@ export class VotingService {
       openRound,
       participationStatus: participation ? 'recorded' as const : 'pending' as const,
       ...(results ? { results } : {}),
+      ...(officialResult ? { officialResult } : {}),
     }
   }
 
@@ -171,11 +173,13 @@ export class VotingService {
       this.prisma.participantSession.count({ where: { assemblyId: assembly.id, status: 'active' } }),
     ])
     const result = round?.status === 'published' ? await this.publishedResults(round.id) : undefined
+    const officialResult = round?.status === 'published' ? await this.publishedOfficialResult(round.id) : null
     return {
       assembly: { id: assembly.id, name: assembly.name, status: assembly.status, completedAt: assembly.completedAt?.toISOString() ?? null },
       participantCount,
       round: round ? { id: round.id, title: round.title, status: round.status } : null,
       ...(result ? { results: result } : {}),
+      ...(officialResult ? { officialResult } : {}),
     }
   }
 
@@ -197,6 +201,7 @@ export class VotingService {
       options: round.options,
       participationCount: round._count.participations,
       ...(round.status === 'published' ? { results: await this.publishedResults(round.id) } : {}),
+      officialResult: await this.moderatorOfficialResult(round.id),
     })))
     return {
       id: assembly.id,
@@ -417,6 +422,113 @@ export class VotingService {
     this.realtime.roundState(current.assemblyId, { roundId, status: 'published', title: current.title })
     this.realtime.resultsPublished(current.assemblyId, payload)
     return { roundId, status: 'published', results }
+  }
+
+  async declareOfficialResult(roundId: string, input: OfficialResultDto) {
+    const optionIds = [...new Set(input.optionIds)]
+    if (optionIds.length !== input.optionIds.length) throw new UnprocessableEntityException('No repitas opciones en el resultado declarado')
+    const note = input.note?.trim() || null
+    const declared = await this.prisma.$transaction(async (tx) => {
+      const rows = await tx.$queryRaw<Array<{ id: string; assembly_id: string; status: string }>>`
+        SELECT id, assembly_id, status FROM rounds WHERE id = ${roundId}::uuid FOR UPDATE
+      `
+      const round = rows[0]
+      if (!round) throw new NotFoundException('Ronda no encontrada')
+      await tx.$queryRaw`SELECT id FROM assemblies WHERE id = ${round.assembly_id}::uuid FOR UPDATE`
+      if (round.status !== 'closed' && round.status !== 'published') throw new ConflictException('Cierra la papeleta antes de registrar el resultado oficial')
+      const options = await tx.ballotOption.findMany({ where: { roundId, id: { in: optionIds } }, select: { id: true, label: true } })
+      if (options.length !== optionIds.length) throw new UnprocessableEntityException('Todas las opciones declaradas deben pertenecer a esta papeleta')
+      const current = await tx.officialResult.findUnique({
+        where: { roundId }, include: { options: { include: { option: { select: { label: true } } } } },
+      })
+      const now = new Date()
+      const saved = current
+        ? await tx.officialResult.update({
+            where: { id: current.id },
+            data: {
+              note, actorRef: MODERATOR_ACTOR, declaredAt: now, publishedAt: null,
+              options: { deleteMany: {}, create: optionIds.map((optionId) => ({ optionId })) },
+            },
+            include: { options: { include: { option: { select: { label: true } } } } },
+          })
+        : await tx.officialResult.create({
+            data: { roundId, note, actorRef: MODERATOR_ACTOR, declaredAt: now, options: { create: optionIds.map((optionId) => ({ optionId })) } },
+            include: { options: { include: { option: { select: { label: true } } } } },
+          })
+      await tx.auditEvent.create({
+        data: {
+          assemblyId: round.assembly_id, roundId, actorRef: MODERATOR_ACTOR,
+          action: current ? 'round.official_result.corrected' : 'round.official_result.declared',
+          occurredAt: now,
+          metadata: {
+            previous: current ? { optionLabels: current.options.map((item) => item.option.label), note: current.note } : null,
+            declared: { optionLabels: options.map((option) => option.label), note },
+          },
+        },
+      })
+      return saved
+    })
+    const round = await this.prisma.round.findUniqueOrThrow({ where: { id: roundId }, select: { assemblyId: true, status: true, title: true } })
+    this.realtime.roundState(round.assemblyId, { roundId, status: round.status, title: round.title })
+    return this.serializeOfficialResult(declared)
+  }
+
+  async publishOfficialResult(roundId: string) {
+    const published = await this.prisma.$transaction(async (tx) => {
+      const rows = await tx.$queryRaw<Array<{ assembly_id: string; status: string }>>`
+        SELECT assembly_id, status FROM rounds WHERE id = ${roundId}::uuid FOR UPDATE
+      `
+      const round = rows[0]
+      if (!round) throw new NotFoundException('Ronda no encontrada')
+      await tx.$queryRaw`SELECT id FROM assemblies WHERE id = ${round.assembly_id}::uuid FOR UPDATE`
+      if (round.status !== 'published') throw new ConflictException('Publica primero el conteo de la papeleta')
+      const existing = await tx.officialResult.findUnique({ where: { roundId } })
+      if (!existing) throw new ConflictException('Registra primero el resultado oficial de la mesa')
+      if (existing.publishedAt) return tx.officialResult.findUniqueOrThrow({
+        where: { roundId }, include: { options: { include: { option: { select: { label: true } } } } },
+      })
+      const now = new Date()
+      const result = await tx.officialResult.update({
+        where: { roundId }, data: { publishedAt: now },
+        include: { options: { include: { option: { select: { label: true } } } } },
+      })
+      await tx.auditEvent.create({ data: { assemblyId: round.assembly_id, roundId, actorRef: MODERATOR_ACTOR, action: 'round.official_result.published', occurredAt: now } })
+      return result
+    })
+    const round = await this.prisma.round.findUniqueOrThrow({ where: { id: roundId }, select: { assemblyId: true, status: true, title: true } })
+    this.realtime.roundState(round.assemblyId, { roundId, status: round.status, title: round.title })
+    return this.serializeOfficialResult(published)
+  }
+
+  private serializeOfficialResult(result: {
+    roundId: string; note: string | null; actorRef: string; declaredAt: Date; publishedAt: Date | null;
+    options: Array<{ optionId: string; option: { label: string } }>
+  }) {
+    return {
+      roundId: result.roundId,
+      elected: result.options.map(({ optionId, option }) => ({ optionId, label: option.label })),
+      note: result.note,
+      declaredBy: result.actorRef,
+      declaredAt: result.declaredAt.toISOString(),
+      publishedAt: result.publishedAt?.toISOString() ?? null,
+    }
+  }
+
+  private async moderatorOfficialResult(roundId: string) {
+    const result = await this.prisma.officialResult.findUnique({
+      where: { roundId }, include: { options: { include: { option: { select: { label: true } } } } },
+    })
+    return result ? this.serializeOfficialResult(result) : null
+  }
+
+  private async publishedOfficialResult(roundId: string) {
+    const result = await this.prisma.officialResult.findFirst({
+      where: { roundId, publishedAt: { not: null } },
+      include: { options: { include: { option: { select: { label: true } } } } },
+    })
+    if (!result) return null
+    const serialized = this.serializeOfficialResult(result)
+    return { elected: serialized.elected, note: serialized.note, declaredAt: serialized.declaredAt }
   }
 
   private async publishedResults(roundId: string) {

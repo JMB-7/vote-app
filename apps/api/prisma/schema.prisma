@@ -44,7 +44,7 @@ model Organization {
 
 model Assembly {
   id             String               @id @default(uuid()) @db.Uuid
-  organizationId String               @db.Uuid @map("organization_id")
+  organizationId String               @map("organization_id") @db.Uuid
   name           String
   status         AssemblyStatus       @default(preparing)
   joinCodeHash   String               @unique @map("join_code_hash") @db.Char(64)
@@ -61,14 +61,14 @@ model Assembly {
 }
 
 model ParticipantSession {
-  id         String             @id @default(uuid()) @db.Uuid
-  assemblyId String             @db.Uuid @map("assembly_id")
-  firstName  String             @map("first_name")
-  lastName   String             @map("last_name")
-  tokenHash  String             @unique @map("token_hash") @db.Char(64)
-  status     ParticipantStatus @default(active)
-  joinedAt   DateTime           @default(now()) @map("joined_at")
-  assembly   Assembly           @relation(fields: [assemblyId], references: [id], onDelete: Cascade)
+  id             String            @id @default(uuid()) @db.Uuid
+  assemblyId     String            @map("assembly_id") @db.Uuid
+  firstName      String            @map("first_name")
+  lastName       String            @map("last_name")
+  tokenHash      String            @unique @map("token_hash") @db.Char(64)
+  status         ParticipantStatus @default(active)
+  joinedAt       DateTime          @default(now()) @map("joined_at")
+  assembly       Assembly          @relation(fields: [assemblyId], references: [id], onDelete: Cascade)
   participations Participation[]
 
   @@index([assemblyId, status])
@@ -77,7 +77,7 @@ model ParticipantSession {
 
 model Round {
   id             String          @id @default(uuid()) @db.Uuid
-  assemblyId     String          @db.Uuid @map("assembly_id")
+  assemblyId     String          @map("assembly_id") @db.Uuid
   title          String
   format         String          @default("single_choice")
   countingRule   Json            @map("counting_rule")
@@ -90,19 +90,44 @@ model Round {
   options        BallotOption[]
   participations Participation[]
   votes          AnonymousVote[]
+  officialResult OfficialResult?
   auditEvents    AuditEvent[]
 
   @@index([assemblyId, status])
   @@map("rounds")
 }
 
+model OfficialResult {
+  id          String                 @id @default(uuid()) @db.Uuid
+  roundId     String                 @unique @map("round_id") @db.Uuid
+  note        String?
+  actorRef    String                 @map("actor_ref")
+  declaredAt  DateTime               @default(now()) @map("declared_at")
+  publishedAt DateTime?              @map("published_at")
+  round       Round                  @relation(fields: [roundId], references: [id], onDelete: Cascade)
+  options     OfficialResultOption[]
+
+  @@map("official_results")
+}
+
+model OfficialResultOption {
+  officialResultId String         @map("official_result_id") @db.Uuid
+  optionId         String         @map("option_id") @db.Uuid
+  officialResult   OfficialResult @relation(fields: [officialResultId], references: [id], onDelete: Cascade)
+  option           BallotOption   @relation(fields: [optionId], references: [id], onDelete: Cascade)
+
+  @@id([officialResultId, optionId])
+  @@map("official_result_options")
+}
+
 model BallotOption {
-  id      String           @id @default(uuid()) @db.Uuid
-  roundId String           @db.Uuid @map("round_id")
-  label   String
-  order   Int
-  round   Round            @relation(fields: [roundId], references: [id], onDelete: Cascade)
-  votes   AnonymousVote[]
+  id              String                 @id @default(uuid()) @db.Uuid
+  roundId         String                 @map("round_id") @db.Uuid
+  label           String
+  order           Int
+  round           Round                  @relation(fields: [roundId], references: [id], onDelete: Cascade)
+  votes           AnonymousVote[]
+  officialResults OfficialResultOption[]
 
   @@unique([roundId, order])
   @@unique([roundId, id])
@@ -111,8 +136,8 @@ model BallotOption {
 
 model Participation {
   id                   String             @id @default(uuid()) @db.Uuid
-  roundId              String             @db.Uuid @map("round_id")
-  participantSessionId String             @db.Uuid @map("participant_session_id")
+  roundId              String             @map("round_id") @db.Uuid
+  participantSessionId String             @map("participant_session_id") @db.Uuid
   recordedAt           DateTime           @default(now()) @map("recorded_at")
   round                Round              @relation(fields: [roundId], references: [id], onDelete: Cascade)
   participantSession   ParticipantSession @relation(fields: [participantSessionId], references: [id], onDelete: Cascade)
@@ -123,8 +148,8 @@ model Participation {
 
 model AnonymousVote {
   id       String       @id @default(uuid()) @db.Uuid
-  roundId  String       @db.Uuid @map("round_id")
-  optionId String       @db.Uuid @map("option_id")
+  roundId  String       @map("round_id") @db.Uuid
+  optionId String       @map("option_id") @db.Uuid
   round    Round        @relation(fields: [roundId], references: [id], onDelete: Cascade)
   option   BallotOption @relation(fields: [roundId, optionId], references: [roundId, id], onDelete: Cascade)
 
@@ -133,12 +158,12 @@ model AnonymousVote {
 }
 
 model AuditEvent {
-  id         String    @id @default(uuid()) @db.Uuid
-  assemblyId String    @db.Uuid @map("assembly_id")
-  roundId    String?   @db.Uuid @map("round_id")
-  actorRef   String    @map("actor_ref")
+  id         String   @id @default(uuid()) @db.Uuid
+  assemblyId String   @map("assembly_id") @db.Uuid
+  roundId    String?  @map("round_id") @db.Uuid
+  actorRef   String   @map("actor_ref")
   action     String
-  occurredAt DateTime  @default(now()) @map("occurred_at")
+  occurredAt DateTime @default(now()) @map("occurred_at")
   metadata   Json?
   assembly   Assembly @relation(fields: [assemblyId], references: [id], onDelete: Cascade)
   round      Round?   @relation(fields: [roundId], references: [id], onDelete: SetNull)
