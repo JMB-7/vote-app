@@ -8,11 +8,12 @@ type PublicState = {
   assemblyCompletedAt?: string | null
   status?: string
   lobbyStatus?: string
-  participants?: Array<{ id: string; firstName: string; lastName: string; assemblyRole?: string | null; committeeEligible?: boolean }>
+  participants?: Array<{ id?: string; firstName: string; lastName: string; assemblyRole?: string | null; committeeEligible?: boolean }>
   participantCount?: number
+  recordedCount?: number
   eligibleCount?: number
   participationStatus?: 'pending' | 'recorded'
-  currentRound?: { id: string; title: string; status: string; format?: string; category?: 'office' | 'committee'; committeeType?: string | null; committeeStage?: string | null; memberCount?: number | null; options?: Array<{ id: string; label: string }> }
+  currentRound?: { id: string; title: string; status: string; format?: string; category?: 'office' | 'committee'; committeeType?: string | null; committeeStage?: string | null; memberCount?: number | null; options?: Array<{ id: string; label: string }>; participationCount?: number }
   committeeCandidates?: Array<{ id: string; firstName: string; lastName: string }>
   committeeProposals?: Array<{ id: string; candidateName: string; supportCount: number; supportedByMe?: boolean }>
   results?: Array<{ label: string; count: number }>
@@ -30,6 +31,7 @@ const route = ref(window.location.pathname)
 const loading = ref(false)
 const error = ref('')
 const notice = ref('')
+const moderationConfirmation = ref<{ title: string; consequence: string; label: string; path: string; method: string; body?: unknown } | null>(null)
 const state = ref<PublicState | null>(null)
 const urlParams = new URLSearchParams(window.location.search)
 const incomingJoinCode = urlParams.get('join') || urlParams.get('code') || ''
@@ -63,6 +65,7 @@ const committeeApprovalCounts = ref<Record<string, { yesVotes: number; noVotes: 
 const participantCandidateSelection = ref('')
 const selectedOptions = ref<string[]>([])
 const committeeEditingRoundId = ref('')
+const showNextBallotForm = ref(false)
 const reviewingVote = ref(false)
 const voteSubmitting = ref(false)
 const reviewHeading = ref<HTMLElement | null>(null)
@@ -77,6 +80,9 @@ watch(() => state.value?.rounds, (rounds) => {
     }
   }
 }, { immediate: true })
+const realtimeActive = ref(false)
+const realtimeConnected = ref(false)
+const projectorFullscreen = ref(false)
 let refreshTimer: number | undefined
 let realtimeSocket: Socket | null = null
 
@@ -85,11 +91,35 @@ const assemblyStatus = computed(() => state.value?.assembly?.status || state.val
 const lobbyStatus = computed(() => state.value?.assembly?.lobbyStatus || (state.value?.lobbyStatus === 'open' || assemblyStatus.value === 'lobby_open' ? 'lobby_open' : 'lobby_closed'))
 const round = computed(() => state.value?.currentRound)
 const assemblyCompletedAt = computed(() => state.value?.assembly?.completedAt || state.value?.assemblyCompletedAt || null)
+const totalParticipants = computed(() => state.value?.participantCount ?? state.value?.participants?.length ?? 0)
+const eligibleVotes = computed(() => state.value?.eligibleCount ?? state.value?.participantCount ?? 0)
 const completionTime = computed(() => assemblyCompletedAt.value
   ? new Intl.DateTimeFormat('es-HN', { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(assemblyCompletedAt.value))
   : '')
 const reviewedOptions = computed(() => round.value?.options?.filter((option) => selectedOptions.value.includes(option.id)) || [])
 const eligibleCommitteeCandidates = computed(() => (state.value?.participants || []).filter((person) => person.assemblyRole === 'delegate' && person.committeeEligible))
+const moderatorWorkflow = ['Revisar ingreso', 'Cerrar ingreso', 'Preparar papeleta', 'Abrir votación', 'Cerrar votación', 'Publicar resultados']
+const moderatorWorkflowStep = computed(() => {
+  if (assemblyStatus.value === 'completed') return moderatorWorkflow.length
+  if (round.value?.status === 'open') return 4
+  if (round.value?.status === 'closed') return 5
+  if (round.value?.status === 'published') return 6
+  if (round.value?.status === 'draft') return 3
+  return lobbyStatus.value === 'lobby_open' ? 0 : 2
+})
+const moderatorSessionSummary = computed(() => {
+  if (!assemblyId.value) return 'El estado de la sesión y las votaciones proviene del servidor.'
+  const status = round.value?.status === 'published' ? 'Resultados publicados'
+    : round.value?.status === 'closed' ? 'Votación cerrada'
+      : round.value?.status === 'open' ? 'Votación abierta'
+        : lobbyStatus.value === 'lobby_open' ? 'Ingreso abierto' : 'Ingreso cerrado'
+  return `Sesión: ${state.value?.assembly?.name || 'Asamblea'} · ${status}`
+})
+const projectorProgressPercent = computed(() => {
+  const eligible = state.value?.eligibleCount ?? 0
+  const recorded = state.value?.recordedCount ?? 0
+  return eligible > 0 ? Math.min(100, Math.round((recorded / eligible) * 100)) : 0
+})
 
 watch(reviewingVote, (reviewing) => {
   if (reviewing) void nextTick(() => reviewHeading.value?.focus())
@@ -108,6 +138,38 @@ function go(path: string) {
   error.value = ''
   notice.value = ''
   void refresh()
+}
+
+function openProjectorWindow() {
+  if (!code.value) {
+    error.value = 'Primero crea una Asamblea para abrir su proyección.'
+    return
+  }
+  const projectorUrl = new URL('/projector', window.location.origin)
+  projectorUrl.searchParams.set('code', code.value)
+  const projectorWindow = window.open(projectorUrl, 'asdmr-projector', 'popup,width=1600,height=900')
+  if (!projectorWindow) {
+    error.value = 'El navegador bloqueó la ventana. Permite las ventanas emergentes para abrir la proyección.'
+    return
+  }
+  projectorWindow.opener = null
+  projectorWindow.focus()
+  error.value = ''
+  notice.value = 'Proyección abierta en otra ventana. Muévela a la pantalla del televisor y actívala en pantalla completa.'
+}
+
+async function toggleProjectorFullscreen() {
+  try {
+    if (document.fullscreenElement) await document.exitFullscreen()
+    else await document.querySelector('.projector-page')?.requestFullscreen()
+    projectorFullscreen.value = Boolean(document.fullscreenElement)
+  } catch {
+    error.value = 'No se pudo activar pantalla completa. Usa la opción de pantalla completa del navegador.'
+  }
+}
+
+function syncProjectorFullscreen() {
+  projectorFullscreen.value = Boolean(document.fullscreenElement)
 }
 
 async function request<T>(path: string, init: RequestInit = {}, token = ''): Promise<T> {
@@ -166,6 +228,7 @@ function normalizeState(value: Record<string, any>): PublicState {
     committeeStage: rawRound.committeeStage || rawRound.stage || rawRound.committee?.stage,
     memberCount: rawRound.memberCount,
     ...(options ? { options } : {}),
+    ...(rawRound.participationCount !== undefined ? { participationCount: rawRound.participationCount } : {}),
   } : undefined
   const assembly = value.assembly || (value.assemblyStatus
     ? { status: value.assemblyStatus }
@@ -178,8 +241,9 @@ function normalizeState(value: Record<string, any>): PublicState {
     results: value.results || rawRound?.results,
     participants: value.participants,
     participantCount: value.participantCount,
+    recordedCount: value.recordedCount ?? rawRound?.participationCount,
     participationStatus: value.participationStatus,
-    eligibleCount: value.eligibleCount,
+    eligibleCount: value.eligibleCount ?? value.participantCount ?? value.participants?.length,
   }
 }
 
@@ -192,6 +256,7 @@ async function refresh() {
       const participantState = await request<Record<string, any>>('/participant/me', {}, requestToken)
       if (sessionToken.value !== requestToken) return
       state.value = normalizeState(participantState)
+      error.value = ''
       const participantAssemblyId = String(participantState.assembly?.id || sessionAssemblyId.value)
       if (participantAssemblyId) {
         sessionAssemblyId.value = participantAssemblyId
@@ -211,14 +276,17 @@ async function refresh() {
       }
     } catch (e) {
       if (sessionToken.value !== requestToken) return
-      if (!handleParticipantUnauthorized(e, requestToken)) {
+      if (!handleParticipantUnauthorized(e, requestToken) && !(state.value && realtimeActive.value && !realtimeConnected.value)) {
         error.value = (e as Error).message
       }
     } finally { loading.value = false }
   } else if (role.value === 'projector' && code.value) {
     loading.value = true
-    try { state.value = normalizeState(await request<Record<string, any>>(`/assemblies/${encodeURIComponent(code.value)}/public-state`)) }
-    catch (e) { error.value = (e as Error).message }
+    try {
+      state.value = normalizeState(await request<Record<string, any>>(`/assemblies/${encodeURIComponent(code.value)}/public-state`))
+      error.value = ''
+    }
+    catch (e) { if (!state.value) error.value = (e as Error).message }
     finally { loading.value = false }
   } else if (role.value === 'moderator' && moderatorToken.value && assemblyId.value) {
     loading.value = true
@@ -240,6 +308,8 @@ async function refresh() {
         state.value = null
         sessionStorage.removeItem('moderatorToken')
         error.value = 'La credencial guardada ya no es válida. Ingresa de nuevo la clave de moderación.'
+      } else if (state.value && realtimeActive.value && !realtimeConnected.value) {
+        error.value = ''
       } else {
         moderatorAuthState.value = 'validation_error'
         state.value = null
@@ -287,7 +357,11 @@ async function join() {
     notice.value = 'Te uniste a la sala. Tu teléfono queda en espera.'
     await refresh()
   } catch (e) {
-    if (!handleParticipantUnauthorized(e, sessionToken.value)) error.value = (e as Error).message
+    if (!handleParticipantUnauthorized(e, sessionToken.value)) {
+      error.value = e instanceof ApiRequestError && e.status === 404
+        ? 'El código no corresponde a una sala abierta. Revísalo con la mesa e inténtalo de nuevo.'
+        : (e as Error).message
+    }
   }
   finally { loading.value = false }
 }
@@ -430,34 +504,49 @@ async function updateParticipantCommitteeStatus(person: NonNullable<PublicState[
 }
 
 async function moderatorAction(path: string, method = 'POST', body?: unknown) {
-  if (!window.confirm('¿Confirmas esta acción de moderación?')) return
+  const removed = body && typeof body === 'object' && 'status' in body && body.status === 'removed'
+  const config = path.endsWith('/lobby')
+    ? { title: '¿Cerrar el ingreso?', consequence: 'Las personas que todavía no se hayan unido ya no podrán entrar.', label: 'Cerrar ingreso' }
+    : path.endsWith('/rounds')
+      ? { title: '¿Preparar esta papeleta?', consequence: 'Revisa el cargo y las opciones. No se podrán editar después de abrir la votación.', label: 'Preparar papeleta' }
+      : path.endsWith('/open')
+        ? { title: '¿Abrir la votación?', consequence: 'La papeleta aparecerá en los teléfonos y sus opciones quedarán fijas.', label: 'Abrir votación' }
+        : path.endsWith('/close')
+          ? { title: '¿Cerrar la votación?', consequence: 'Dejará de aceptar votos. Los resultados seguirán ocultos hasta que la mesa decida publicarlos.', label: 'Cerrar votación' }
+          : path.endsWith('/publish')
+            ? { title: '¿Publicar resultados?', consequence: 'Los conteos agregados se harán visibles para participantes y proyector.', label: 'Publicar resultados' }
+            : removed
+              ? { title: '¿Retirar a esta persona?', consequence: 'Ya no podrá participar desde esta sesión.', label: 'Retirar participante' }
+              : { title: '¿Guardar los cambios?', consequence: 'Se actualizarán los datos de esta persona en la lista.', label: 'Guardar cambios' }
+  moderationConfirmation.value = { ...config, path, method, ...(body === undefined ? {} : { body }) }
+}
+
+async function confirmModeratorAction() {
+  const action = moderationConfirmation.value
+  if (!action || loading.value) return
+  moderationConfirmation.value = null
   error.value = ''
   loading.value = true
   let succeeded = false
   try {
-    await request(path, { method, ...(body === undefined ? {} : { body: JSON.stringify(body) }) }, moderatorToken.value)
-    notice.value = 'Acción registrada.'
+    await request(action.path, { method: action.method, ...(action.body === undefined ? {} : { body: JSON.stringify(action.body) }) }, moderatorToken.value)
+    notice.value = ''
     succeeded = true
   } catch (e) { error.value = (e as Error).message }
   finally { loading.value = false }
+  if (succeeded && action.path.endsWith('/complete')) notice.value = 'La Asamblea quedó finalizada y disponible en modo de consulta.'
   if (succeeded) await refresh()
 }
 
 async function completeAssembly() {
   if (!assemblyId.value || assemblyStatus.value === 'completed' || round.value?.status === 'open') return
-  if (!window.confirm('¿Finalizar la Asamblea? Confirma solo después de que la mesa haya aprobado el cierre. La sesión quedará en modo de consulta.')) return
-  error.value = ''
-  loading.value = true
-  let succeeded = false
-  try {
-    await request(`/moderator/assemblies/${encodeURIComponent(assemblyId.value)}/complete`, {
-      method: 'POST', body: JSON.stringify({ confirmation: true }),
-    }, moderatorToken.value)
-    notice.value = 'La Asamblea quedó finalizada y disponible en modo de consulta.'
-    succeeded = true
-  } catch (e) { error.value = (e as Error).message }
-  finally { loading.value = false }
-  if (succeeded) await refresh()
+  moderationConfirmation.value = {
+    title: '¿Finalizar la Asamblea?',
+    consequence: 'Confirma solo después de que la mesa haya aprobado el cierre. La sesión quedará en modo de consulta.',
+    label: 'Finalizar Asamblea',
+    path: `/moderator/assemblies/${encodeURIComponent(assemblyId.value)}/complete`,
+    method: 'POST', body: { confirmation: true },
+  }
 }
 
 async function createAssembly() {
@@ -485,7 +574,8 @@ async function refreshQr() {
   qrImage.value = await QRCode.toDataURL(`${origin}/?join=${encodeURIComponent(code.value)}`, { width: 420, margin: 2 })
 }
 
-function editParticipant(person: { id: string; firstName: string; lastName: string }) {
+function editParticipant(person: { id?: string; firstName: string; lastName: string }) {
+  if (!person.id) return
   const updatedFirst = window.prompt('Corrige el nombre del participante:', person.firstName)
   if (updatedFirst === null) return
   const updatedLast = window.prompt('Corrige el apellido del participante:', person.lastName)
@@ -502,6 +592,7 @@ async function createRound() {
     : optionsText.value.split('\n').map((label) => label.trim()).filter(Boolean).map((label) => ({ label }))
   if (roundCategory.value === 'office' && options.length < 2) { error.value = 'Agrega al menos dos opciones, una por línea.'; return }
   if (roundCategory.value === 'committee' && committeeType.value !== 'nomination' && options.length === 0) { error.value = 'Selecciona participantes con elegibilidad confirmada o deja el proceso bloqueado hasta validar la lista.'; return }
+  showNextBallotForm.value = false
   await moderatorAction(`/moderator/assemblies/${encodeURIComponent(assemblyId.value)}/rounds`, 'POST', {
     title: roundTitle.value, format: roundCategory.value === 'committee' ? 'multiple_choice' : 'single_choice', options,
     category: roundCategory.value,
@@ -573,20 +664,26 @@ async function signInModerator() {
 function syncRealtime() {
   realtimeSocket?.disconnect()
   realtimeSocket = null
+  realtimeActive.value = false
+  realtimeConnected.value = false
   let auth: Record<string, string> | null = null
   if (role.value === 'participant' && sessionToken.value) auth = { audience: 'participant', participantSessionToken: sessionToken.value }
   else if (role.value === 'moderator' && moderatorToken.value && assemblyId.value) auth = { audience: 'moderator', moderatorCredential: moderatorToken.value, assemblyId: assemblyId.value }
   else if (role.value === 'projector' && code.value) auth = { audience: 'public', assemblyCode: code.value }
   if (!auth) return
   const socketUrl = import.meta.env.VITE_SOCKET_URL || `${API.replace(/\/api\/v1\/?$/, '')}/events`
+  realtimeActive.value = true
   realtimeSocket = io(socketUrl, { auth, transports: ['websocket', 'polling'], reconnection: true, reconnectionDelayMax: 5000 })
   for (const event of ['assembly.state', 'lobby.state', 'participant.joined', 'participant.updated', 'participant.removed', 'participant.state', 'round.state', 'round.opened', 'round.closed', 'participation.count', 'results.published']) {
     realtimeSocket.on(event, () => { void refresh() })
   }
-  realtimeSocket.on('connect', () => { void refresh() })
+  realtimeSocket.on('connect', () => { realtimeConnected.value = true; void refresh() })
+  realtimeSocket.on('disconnect', () => { realtimeConnected.value = false })
+  realtimeSocket.on('connect_error', () => { realtimeConnected.value = false })
 }
 
 onMounted(() => {
+  document.addEventListener('fullscreenchange', syncProjectorFullscreen)
   window.addEventListener('popstate', () => {
     const nextRoute = window.location.pathname
     if (nextRoute.startsWith('/moderator')) {
@@ -605,22 +702,34 @@ onMounted(() => {
 })
 watch([route, sessionToken, moderatorToken, code], () => syncRealtime())
 watch(code, () => { void refreshQr() })
-onUnmounted(() => { if (refreshTimer) window.clearInterval(refreshTimer); realtimeSocket?.disconnect() })
+onUnmounted(() => { if (refreshTimer) window.clearInterval(refreshTimer); realtimeSocket?.disconnect(); document.removeEventListener('fullscreenchange', syncProjectorFullscreen) })
 </script>
 
 <template>
-  <header class="topbar">
+  <header v-if="role !== 'projector'" class="topbar" :class="{ 'topbar-session': role === 'participant' && !!sessionToken }">
     <a class="brand" href="/" @click.prevent="go('/')"><span class="brand-mark">A</span><span>ASDMR <small>Unión Hondureña</small></span></a>
     <nav v-if="role === 'moderator'" aria-label="Vistas de mesa">
       <a href="/" @click.prevent="go('/')">Delegado</a>
-      <a :href="`/projector${code ? `?code=${encodeURIComponent(code)}` : ''}`" @click.prevent="go('/projector')">Proyector</a>
+      <a :href="`/projector${code ? `?code=${encodeURIComponent(code)}` : ''}`" @click.prevent="openProjectorWindow">Abrir proyector</a>
     </nav>
   </header>
 
-  <main :class="['page', { 'projector-page': role === 'projector' }]">
-    <div v-if="error" class="notice error" role="alert"><strong>Ocurrió un problema.</strong> {{ error }}</div>
+  <main :class="['page', `${role}-page`, { 'projector-page': role === 'projector', 'participant-session-page': role === 'participant' && !!sessionToken }]">
+    <p v-if="role !== 'projector' && realtimeActive && !realtimeConnected && !(role === 'moderator' && moderatorAuthState === 'validation_error')" class="connection-warning" role="status" aria-live="polite">Conexión interrumpida · Intentando reconectar. Los datos mostrados son los últimos confirmados.</p>
+    <div v-if="error && !(role === 'moderator' && moderatorAuthState === 'validation_error')" class="notice error" role="alert"><strong v-if="!(role === 'participant' && !sessionToken && error.startsWith('El código no corresponde'))">Ocurrió un problema.</strong>{{ error }}</div>
     <div v-if="notice" class="notice success" role="status">{{ notice }}</div>
     <p v-if="loading" class="sync" aria-live="polite">Actualizando estado…</p>
+    <div v-if="role === 'moderator' && moderationConfirmation" class="confirmation-backdrop" @click.self="moderationConfirmation = null">
+      <section class="confirmation-dialog" role="dialog" aria-modal="true" aria-labelledby="moderation-confirm-title" aria-describedby="moderation-confirm-description">
+        <p class="eyebrow">CONFIRMACIÓN DE MESA</p>
+        <h2 id="moderation-confirm-title">{{ moderationConfirmation.title }}</h2>
+        <p id="moderation-confirm-description">{{ moderationConfirmation.consequence }}</p>
+        <div class="confirmation-actions">
+          <button class="secondary" :disabled="loading" @click="moderationConfirmation = null">Cancelar</button>
+          <button :class="moderationConfirmation.path.endsWith('/complete') || moderationConfirmation.path.endsWith('/close') || moderationConfirmation.path.includes('/participants/') ? 'danger' : 'primary'" :disabled="loading" @click="confirmModeratorAction">{{ loading ? 'Guardando…' : moderationConfirmation.label }}</button>
+        </div>
+      </section>
+    </div>
 
     <template v-if="role === 'participant'">
       <section v-if="!sessionToken" class="card join-card">
@@ -648,6 +757,11 @@ onUnmounted(() => { if (refreshTimer) window.clearInterval(refreshTimer); realti
         <div v-if="assemblyStatus === 'completed'" class="status-panel assembly-completed" role="status"><span class="status-dot"></span><div><strong>La sesión concluyó</strong><p>Esta Asamblea está en modo de consulta.<template v-if="completionTime"> Se finalizó {{ completionTime }}.</template></p></div></div>
         <template v-if="state?.participationStatus === 'recorded'">
           <div class="status-panel"><span class="status-dot"></span><div><strong>Tu participación está registrada</strong><p>La papeleta fue confirmada y no puede cambiarse. No se muestra aquí la opción seleccionada.</p></div></div>
+          <section v-if="round?.status === 'published' && state?.results?.length" class="participant-results" aria-labelledby="participant-results-title">
+            <p class="eyebrow">RESULTADOS PUBLICADOS</p><h2 id="participant-results-title">{{ round.title }}</h2>
+            <ul class="participant-results-list"><li v-for="result in state.results" :key="result.label"><span>{{ result.label }}</span><strong>{{ result.count }} {{ result.count === 1 ? 'voto' : 'votos' }}</strong></li></ul>
+            <p class="participant-results-total">Total: {{ state.results.reduce((total, result) => total + result.count, 0) }} {{ state.results.reduce((total, result) => total + result.count, 0) === 1 ? 'voto' : 'votos' }}</p>
+          </section>
         </template>
         <section v-if="state?.results?.length" class="participant-published-results"><p class="eyebrow">RESULTADOS PUBLICADOS</p><div class="results-list"><div v-for="result in state.results" :key="result.label"><span>{{ result.label }}</span><strong>{{ result.count }}</strong></div></div><div v-if="state.officialResult" class="projector-official-result"><p class="eyebrow">RESULTADO OFICIAL DE LA MESA</p><h2>{{ state.officialResult.elected.map((person) => person.label).join(' · ') }}</h2><p v-if="state.officialResult.note">{{ state.officialResult.note }}</p></div></section>
         <template v-else-if="round?.status === 'open' && round.options?.length && reviewingVote">
@@ -689,10 +803,13 @@ onUnmounted(() => { if (refreshTimer) window.clearInterval(refreshTimer); realti
         <p class="eyebrow">ACCESO DE MESA</p><h1>Verificando acceso</h1>
         <p class="lead">Estamos validando la credencial con el servidor.</p>
       </section>
-      <section v-else-if="moderatorAuthState === 'validation_error'" class="card join-card">
-        <p class="eyebrow">ACCESO DE MESA</p><h1>No se pudo validar el acceso</h1>
-        <p class="lead">La credencial se conserva. Comprueba la conexión e inténtalo de nuevo.</p>
-        <button class="primary" :disabled="loading" @click="refresh">{{ loading ? 'Reintentando…' : 'Reintentar validación' }}</button>
+      <section v-else-if="moderatorAuthState === 'validation_error'" class="validation-state">
+        <header class="validation-heading"><p class="eyebrow">PANEL DE MODERACIÓN</p><h1>Error de validación</h1></header>
+        <section class="card join-card validation-card">
+          <p class="eyebrow">ACCESO DE MESA</p><h2>No se pudo validar el acceso</h2>
+          <p class="lead">La credencial se conserva. Comprueba la conexión e inténtalo de nuevo.</p>
+          <button class="primary" :disabled="loading" @click="refresh">{{ loading ? 'Reintentando…' : 'Reintentar validación' }}</button>
+        </section>
       </section>
       <section v-else-if="moderatorAuthState !== 'authenticated'" class="card join-card">
         <p class="eyebrow">ACCESO DE MESA</p><h1>Moderación</h1>
@@ -700,13 +817,18 @@ onUnmounted(() => { if (refreshTimer) window.clearInterval(refreshTimer); realti
         <form @submit.prevent="signInModerator"><label>Credencial de moderación<input v-model="moderatorCredential" type="password" autocomplete="current-password" required /></label><button class="primary">Continuar</button></form>
       </section>
       <template v-else-if="moderatorAuthState === 'authenticated'">
-        <section class="page-heading"><p class="eyebrow">PANEL DE MODERACIÓN</p><h1>Control de Asamblea</h1><p>El estado de la sesión y las votaciones proviene del servidor.</p></section>
+        <section class="page-heading"><div class="heading-copy"><p class="eyebrow">PANEL DE MODERACIÓN</p><h1>Control de Asamblea</h1><p>{{ moderatorSessionSummary }}</p></div><div class="heading-projector"><button class="primary" @click="openProjectorWindow">Abrir proyector en otra ventana</button><p>La moderación permanece en esta ventana privada; la pantalla externa muestra solo la vista pública.</p></div></section>
         <section v-if="!assemblyId" class="card"><h2>Crear Asamblea</h2><form @submit.prevent="createAssembly"><label>Nombre<input v-model="assemblyName" required /></label><button class="primary" :disabled="loading">Crear Asamblea y generar código</button></form></section>
         <template v-else>
+          <ol class="workflow-steps" aria-label="Pasos de la moderación">
+            <li v-for="(step, index) in moderatorWorkflow" :key="step" :class="{ complete: index < moderatorWorkflowStep, current: index === moderatorWorkflowStep }" :aria-current="index === moderatorWorkflowStep ? 'step' : undefined">
+              <span class="workflow-step-number">{{ index + 1 }}</span><span>{{ step }}</span>
+            </li>
+          </ol>
           <section class="summary-grid">
-            <div class="card metric"><span>Estado</span><strong>{{ assemblyStatus }}</strong></div>
-            <div class="card metric"><span>Participación</span><strong>{{ state?.participantCount ?? 0 }}<small v-if="state?.eligibleCount"> / {{ state.eligibleCount }}</small></strong></div>
-            <div class="card metric"><span>Ingreso</span><strong>{{ lobbyStatus === 'lobby_open' ? 'Abierto' : 'Cerrado' }}</strong></div>
+            <div class="card metric"><span>Estado</span><strong>{{ round?.status === 'published' ? 'Resultados publicados' : round?.status === 'closed' ? 'Votación cerrada' : round?.status === 'open' ? 'Votación abierta' : lobbyStatus === 'lobby_open' ? 'Ingreso abierto' : assemblyStatus }}</strong></div>
+            <div class="card metric"><span>Participación</span><strong v-if="round">{{ state?.recordedCount ?? 0 }}<small> / {{ eligibleVotes }} {{ eligibleVotes === 1 ? 'voto' : 'votos' }}</small></strong><strong v-else>{{ totalParticipants }} {{ totalParticipants === 1 ? 'participante' : 'participantes' }}</strong></div>
+            <div class="card metric"><span>Papeleta</span><strong>{{ round?.status === 'published' ? 'Publicada' : round?.status === 'closed' ? 'Cerrada' : round ? 'Preparada' : 'Sin iniciar' }}</strong></div>
           </section>
           <section v-if="assemblyStatus === 'completed'" class="status-panel assembly-completed" role="status"><span class="status-dot"></span><div><strong>Asamblea finalizada</strong><p>El sistema está en modo de consulta.<template v-if="completionTime"> Se registró {{ completionTime }}.</template></p></div></section>
           <template v-else>
@@ -732,13 +854,9 @@ onUnmounted(() => { if (refreshTimer) window.clearInterval(refreshTimer); realti
                 </template>
                 <label v-else>Opciones o candidaturas <span class="hint">Una por línea</span><textarea v-model="optionsText" rows="4" required placeholder="Nombre o descripción de cada opción"></textarea></label><button class="primary" :disabled="loading">{{ roundCategory === 'committee' ? 'Guardar configuración de comisión' : 'Preparar papeleta' }}</button></form>
             </template>
-            <p v-if="round?.status === 'draft'" class="status-line">Papeleta preparada. Revisa las opciones antes de abrir.</p>
-            <p v-if="round?.status === 'closed'" class="status-line">La papeleta está cerrada. Los resultados siguen ocultos hasta publicarlos.</p>
-            <ul v-if="round?.options?.length" class="option-list"><li v-for="option in round.options" :key="option.id">{{ option.label }}</li></ul>
-            <div class="action-row" v-if="round"><button v-if="round.status === 'draft'" class="primary" @click="moderatorAction(`/moderator/rounds/${round.id}/open`)">Abrir papeleta</button><button v-if="round.status === 'open'" class="danger" @click="moderatorAction(`/moderator/rounds/${round.id}/close`)">Cerrar papeleta</button><button v-if="round.status === 'closed'" class="primary" @click="moderatorAction(`/moderator/rounds/${round.id}/publish`)">Publicar resultados</button></div>
-            <p class="privacy-note">Los resultados por opción permanecen ocultos hasta que el moderador los publique.</p>
           </section>
-          <section v-if="assemblyStatus !== 'preparing'" class="card assembly-close"><p class="eyebrow">CIERRE DE SESIÓN</p><h2>Finalizar Asamblea</h2><p>Registra el cierre después de que la mesa haya aprobado la decisión. Se conservarán resultados y registros para consulta.</p><p v-if="round?.status === 'open'" class="status-line">Cierra la papeleta abierta antes de finalizar la Asamblea.</p><button class="danger" :disabled="loading || round?.status === 'open'" @click="completeAssembly">Finalizar Asamblea</button></section>
+          <section v-if="assemblyStatus !== 'preparing' && round?.status !== 'published'" class="card assembly-close"><p class="eyebrow">CIERRE DE SESIÓN</p><h2>Finalizar Asamblea</h2><p>Registra el cierre después de que la mesa haya aprobado la decisión. Se conservarán resultados y registros para consulta.</p><p v-if="round?.status === 'open'" class="status-line">Cierra la papeleta abierta antes de finalizar la Asamblea.</p><button class="danger" :disabled="loading || round?.status === 'open'" @click="completeAssembly">Finalizar Asamblea</button></section>
+          </div>
           </template>
           <section v-if="state?.rounds?.length" class="card official-history">
             <p class="eyebrow">ACTA DE RESULTADOS</p><h2>Declaraciones oficiales de la mesa</h2>
@@ -802,17 +920,42 @@ onUnmounted(() => { if (refreshTimer) window.clearInterval(refreshTimer); realti
     </template>
 
     <template v-else>
+      <div v-if="code" class="projector-controls"><span>Esta ventana es solo para el público. La moderación sigue en la ventana original. Muévela al televisor antes de proyectar.</span><button class="secondary" @click="toggleProjectorFullscreen">{{ projectorFullscreen ? 'Salir de pantalla completa' : 'Iniciar proyección' }}</button></div>
       <section v-if="!code" class="card join-card"><p class="eyebrow">PANTALLA PÚBLICA</p><h1>Proyector</h1><p class="lead">Ingresa el código de la sala para mostrar el estado permitido de la Asamblea.</p><form @submit.prevent="go(`/projector?code=${encodeURIComponent(code)}`)"><label>Código de sala<input v-model="code" required /></label><button class="primary">Mostrar sala</button></form></section>
       <section v-else class="projector-content">
         <p class="eyebrow">ASDMR · UNIÓN HONDUREÑA</p>
-        <h1>{{ assemblyStatus === 'completed' ? 'Asamblea finalizada' : round?.status === 'published' ? 'Resultados publicados' : round?.status === 'open' ? round.title : 'Sala de Asamblea' }}</h1>
-        <p class="projector-subtitle">{{ assemblyStatus === 'completed' ? `Sesión concluida${completionTime ? ` · ${completionTime}` : ''}` : round?.status === 'open' ? 'Votación abierta' : round?.status === 'published' ? 'Resultados autorizados por la mesa' : 'Estado: ' + assemblyStatus }}</p>
-        <div v-if="round?.status === 'published'" class="results-list"><div v-for="result in state?.results || []" :key="result.label"><span>{{ result.label }}</span><strong>{{ result.count }}</strong></div></div>
+        <h1>{{ assemblyStatus === 'completed' ? 'Asamblea finalizada' : round?.status === 'published' ? 'Resultados publicados' : round?.status === 'open' || round?.status === 'closed' ? round.title : 'Sala de Asamblea' }}</h1>
+        <p class="projector-subtitle">{{ assemblyStatus === 'completed' ? `Sesión concluida${completionTime ? ` · ${completionTime}` : ''}` : round?.status === 'open' ? 'Votación abierta' : round?.status === 'closed' ? 'Votación cerrada · resultados ocultos' : round?.status === 'published' ? 'Resultados autorizados por la mesa' : 'Estado: ' + assemblyStatus }}</p>
+        <p v-if="realtimeActive && !realtimeConnected" class="connection-warning projector-connection-warning" role="status" aria-live="polite">Conexión interrumpida · Intentando reconectar. Los datos mostrados son los últimos confirmados.</p>
+        <div v-if="round?.status === 'published'" class="results-list">
+          <div v-for="result in state?.results || []" :key="result.label"><span>{{ result.label }}</span><strong>{{ result.count }} {{ result.count === 1 ? 'voto' : 'votos' }}</strong></div>
+          <p class="projector-result-total">Total: {{ (state?.results || []).reduce((total, result) => total + result.count, 0) }} {{ (state?.results || []).reduce((total, result) => total + result.count, 0) === 1 ? 'voto' : 'votos' }}</p>
+          <p class="projector-results-note">Conteo agregado por opción · sin proclamación automática de ganador</p>
+        </div>
         <section v-if="state?.officialResult" class="projector-official-result"><p class="eyebrow">RESULTADO DECLARADO POR LA MESA</p><h2>{{ state.officialResult.elected.map((person) => person.label).join(' · ') }}</h2><p v-if="state.officialResult.note">{{ state.officialResult.note }}</p><small>Declaración registrada {{ formatDateTime(state.officialResult.declaredAt) }}</small></section>
-        <div v-if="round?.status !== 'published'" class="projector-progress"><strong>{{ state?.participantCount ?? 0 }}</strong><span>participaciones registradas</span></div>
-        <div v-if="lobbyStatus === 'lobby_open'" class="projector-lobby"><img v-if="qrImage" class="projector-qr" :src="qrImage" alt="Código QR para unirse a la Asamblea" /><div>Escanea el QR para unirte<p>Código: <strong>{{ code }}</strong></p></div></div>
+        <div v-if="round?.status === 'open' || round?.status === 'closed'" class="projector-progress" aria-live="polite">
+          <strong>{{ state?.recordedCount ?? 0 }}</strong>
+          <span>de {{ state?.eligibleCount ?? state?.participantCount ?? 0 }} {{ (state?.eligibleCount ?? state?.participantCount ?? 0) === 1 ? 'voto recibido' : 'votos recibidos' }}</span>
+          <div class="progress-track" role="progressbar" :aria-valuenow="state?.recordedCount ?? 0" :aria-valuemin="0" :aria-valuemax="state?.eligibleCount ?? state?.participantCount ?? 0" aria-label="Participación agregada en la votación"><span :style="{ width: `${projectorProgressPercent}%` }"></span></div>
+          <p v-if="round?.status === 'closed'" class="projector-closed-note">La votación terminó. Los resultados se mostrarán cuando la mesa decida publicarlos.</p>
+        </div>
+        <div v-else-if="lobbyStatus !== 'lobby_open' && round?.status !== 'published'" class="projector-progress"><strong>{{ state?.participantCount ?? 0 }}</strong><span>personas en la sala</span></div>
+        <section v-if="lobbyStatus === 'lobby_open'" class="projector-lobby" aria-label="Ingreso abierto">
+          <div class="projector-lobby-summary">
+            <img v-if="qrImage" class="projector-qr" :src="qrImage" alt="Código QR para unirse a la Asamblea" />
+            <div><p class="eyebrow">INGRESO ABIERTO</p><strong class="projector-join-count">{{ state?.participantCount ?? 0 }}</strong><span>personas han ingresado</span><p>Código: <strong>{{ code }}</strong></p></div>
+          </div>
+          <div class="projector-participant-panel">
+            <h2>Personas que ya ingresaron <span>{{ state?.participantCount ?? 0 }}</span></h2>
+            <ul class="projector-participants" aria-label="Lista de participantes en la sala">
+              <li v-for="(person, index) in state?.participants || []" :key="`${person.firstName}-${person.lastName}-${index}`">{{ person.firstName }} {{ person.lastName }}</li>
+              <li v-if="!state?.participants?.length" class="empty">Todavía no ha ingresado nadie.</li>
+            </ul>
+            <p class="projector-list-note">Al iniciar la votación, esta lista se oculta y el proyector muestra solo el progreso agregado.</p>
+          </div>
+        </section>
       </section>
     </template>
   </main>
-  <footer><span>V1 · Herramienta operativa de la Asamblea</span><button v-if="role !== 'projector'" class="link-button" @click="refresh">Sincronizar estado</button></footer>
+  <footer v-if="role !== 'projector'"><span>V1 · Herramienta operativa de la Asamblea</span><button v-if="role === 'moderator' || !sessionToken" class="link-button" @click="refresh">Sincronizar estado</button></footer>
 </template>
