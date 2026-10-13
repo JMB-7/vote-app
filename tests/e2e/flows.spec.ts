@@ -78,6 +78,84 @@ test('delegado ingresa con datos sintéticos y confirma su participación', asyn
   expect(voteCount).toBe(1)
 })
 
+test('delegado vota en comisión con selección múltiple limitada a los cupos', async ({ page }) => {
+  await page.addInitScript(() => localStorage.setItem('participantSessionToken', 'committee-session'))
+  let recorded = false
+  await page.route(api, async (route) => {
+    const request = route.request()
+    const url = new URL(request.url())
+    if (request.method() === 'GET' && url.pathname.endsWith('/participant/me')) {
+      await route.fulfill({ json: {
+        assembly: { id: 'committee-assembly', name: 'Asamblea prueba', status: 'in_progress' },
+        participationStatus: recorded ? 'recorded' : 'pending',
+        currentRound: { id: 'committee-round', title: 'Comisión de Finanzas', status: 'open', format: 'multiple_choice', category: 'committee', committeeType: 'finance', memberCount: 2, options: [
+          { id: 'candidate-a', label: 'Ana (prueba)' }, { id: 'candidate-b', label: 'Beto (prueba)' }, { id: 'candidate-c', label: 'Celia (prueba)' },
+        ] },
+      } })
+      return
+    }
+    if (request.method() === 'POST' && url.pathname.endsWith('/participant/rounds/committee-round/vote')) {
+      expect(request.postDataJSON()).toEqual({ optionIds: ['candidate-a', 'candidate-b'], confirmation: true })
+      recorded = true
+      await route.fulfill({ status: 201, json: { status: 'recorded' } })
+      return
+    }
+    await route.fulfill({ status: 404, json: { message: 'No mock route for secret committee ballot test' } })
+  })
+
+  await page.goto('/')
+  await expect(page.getByLabel('Ana (prueba)')).toBeVisible()
+  await page.getByLabel('Ana (prueba)').check()
+  await page.getByLabel('Beto (prueba)').check()
+  await page.getByLabel('Celia (prueba)').check()
+  await expect(page.getByRole('alert')).toContainText('máximo 2 integrantes')
+  await page.getByLabel('Celia (prueba)').uncheck()
+  await page.getByRole('button', { name: 'Revisar y confirmar voto' }).click()
+  await expect(page.locator('.review-details')).toContainText('Ana (prueba), Beto (prueba)')
+  await page.getByRole('button', { name: 'Confirmar voto' }).click()
+  await expect(page.getByText('Tu participación está registrada')).toBeVisible()
+})
+
+test('delegado registra una propuesta y apoyo sin mostrar identidades de apoyo', async ({ page }) => {
+  let stage: 'proposals' | 'support' = 'proposals'
+  let supported = false
+  const stateForDelegate = () => ({
+    assembly: { id: 'committee-assembly', name: 'Asamblea prueba', status: 'in_progress' },
+    participationStatus: 'pending',
+    currentRound: { id: 'nomination-round', title: 'Comisión de Nombramiento', status: 'draft', format: 'multiple_choice', category: 'committee', committeeType: 'nomination', committeeStage: stage, options: [] },
+    committeeCandidates: [{ id: 'candidate-1', firstName: 'Ana', lastName: 'Delegada' }],
+    committeeProposals: [{ id: 'proposal-1', candidateName: 'Ana Delegada', supportCount: supported ? 1 : 0, supportedByMe: supported }],
+  })
+  await page.addInitScript(() => localStorage.setItem('participantSessionToken', 'committee-session'))
+  await page.route(api, async (route) => {
+    const request = route.request()
+    const url = new URL(request.url())
+    if (request.method() === 'GET' && url.pathname.endsWith('/participant/me')) {
+      await route.fulfill({ json: stateForDelegate() }); return
+    }
+    if (request.method() === 'POST' && url.pathname.endsWith('/committee/proposals')) {
+      expect(request.postDataJSON()).toEqual({ candidateParticipantId: 'candidate-1' })
+      await route.fulfill({ status: 201, json: { id: 'proposal-1' } }); return
+    }
+    if (request.method() === 'POST' && url.pathname.endsWith('/committee/proposals/proposal-1/support')) {
+      supported = true
+      await route.fulfill({ status: 201, json: { status: 'supported' } }); return
+    }
+    await route.fulfill({ status: 404, json: { message: 'No mock route for committee proposal test' } })
+  })
+  await page.goto('/')
+  await expect(page.getByRole('heading', { name: 'Registrar propuesta' })).toBeVisible()
+  await page.getByLabel('Candidatura').selectOption('candidate-1')
+  await page.getByRole('button', { name: 'Registrar propuesta' }).click()
+  stage = 'support'
+  await page.getByRole('button', { name: 'Sincronizar estado' }).click()
+  await expect(page.getByRole('heading', { name: 'Apoyar propuestas' })).toBeVisible()
+  await expect(page.getByText('0 apoyos')).toBeVisible()
+  await page.getByRole('button', { name: 'Apoyar' }).click()
+  await expect(page.getByRole('button', { name: 'Apoyo registrado' })).toBeDisabled()
+  await expect(page.getByText(/Solo se muestra el total, no quién apoyó/)).toBeVisible()
+})
+
 test('delegado conserva la sesión al recargar y puede salir limpiando el estado local', async ({ page }) => {
   await page.addInitScript(() => {
     localStorage.setItem('participantSessionToken', 'synthetic-session-token')
