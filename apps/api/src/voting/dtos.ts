@@ -78,6 +78,14 @@ export class VoteDto {
   confirmation!: true
 }
 
+export class OfficialResultDto {
+  @IsArray() @ArrayMinSize(1) @ArrayMaxSize(40) @IsUUID('all', { each: true })
+  optionIds!: string[]
+
+  @IsOptional() @IsString() @MaxLength(1000)
+  note?: string
+}
+
 export class RouteIdDto {
   @IsInt() @Min(1)
   id!: number

@@ -14,6 +14,12 @@ type PublicState = {
   participationStatus?: 'pending' | 'recorded'
   currentRound?: { id: string; title: string; status: string; options?: Array<{ id: string; label: string }> }
   results?: Array<{ label: string; count: number }>
+  officialResult?: { elected: Array<{ optionId: string; label: string }>; note: string | null; declaredAt: string }
+  rounds?: Array<{
+    id: string; title: string; status: string; options: Array<{ id: string; label: string }>
+    results?: Array<{ optionId: string; label: string; count: number }>
+    officialResult?: { elected: Array<{ optionId: string; label: string }>; note: string | null; declaredBy: string; declaredAt: string; publishedAt: string | null } | null
+  }>
 }
 
 const API = import.meta.env.VITE_API_URL || 'http://localhost:3000/api/v1'
@@ -43,6 +49,16 @@ const reviewingVote = ref(false)
 const voteSubmitting = ref(false)
 const reviewHeading = ref<HTMLElement | null>(null)
 const qrImage = ref('')
+const officialSelections = ref<Record<string, string[]>>({})
+const officialNotes = ref<Record<string, string>>({})
+watch(() => state.value?.rounds, (rounds) => {
+  for (const item of rounds || []) {
+    if (!Array.isArray(officialSelections.value[item.id])) {
+      officialSelections.value[item.id] = item.officialResult?.elected.map((person) => person.optionId) || []
+      officialNotes.value[item.id] = item.officialResult?.note || ''
+    }
+  }
+}, { immediate: true })
 let refreshTimer: number | undefined
 let realtimeSocket: Socket | null = null
 
@@ -363,6 +379,22 @@ async function createRound() {
   })
 }
 
+async function saveOfficialResult(targetRound: NonNullable<PublicState['rounds']>[number]) {
+  const optionIds = officialSelections.value[targetRound.id] || []
+  if (!optionIds.length) { error.value = 'Selecciona al menos una persona u opción declarada por la mesa.'; return }
+  await moderatorAction(`/moderator/rounds/${encodeURIComponent(targetRound.id)}/official-result`, 'PUT', {
+    optionIds, note: officialNotes.value[targetRound.id] || '',
+  })
+}
+
+function formatDateTime(value: string) {
+  return new Intl.DateTimeFormat('es-HN', { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(value))
+}
+
+function formatActor(actor: string) {
+  return actor === 'shared_moderator_credential' ? 'moderación (credencial compartida)' : actor
+}
+
 async function signInModerator() {
   const credential = moderatorCredential.value.trim()
   if (!credential) return
@@ -540,6 +572,33 @@ onUnmounted(() => { if (refreshTimer) window.clearInterval(refreshTimer); realti
           </section>
           <section v-if="assemblyStatus !== 'preparing'" class="card assembly-close"><p class="eyebrow">CIERRE DE SESIÓN</p><h2>Finalizar Asamblea</h2><p>Registra el cierre después de que la mesa haya aprobado la decisión. Se conservarán resultados y registros para consulta.</p><p v-if="round?.status === 'open'" class="status-line">Cierra la papeleta abierta antes de finalizar la Asamblea.</p><button class="danger" :disabled="loading || round?.status === 'open'" @click="completeAssembly">Finalizar Asamblea</button></section>
           </template>
+          <section v-if="state?.rounds?.length" class="card official-history">
+            <p class="eyebrow">ACTA DE RESULTADOS</p><h2>Declaraciones oficiales de la mesa</h2>
+            <article v-for="historyRound in state.rounds" :key="historyRound.id" class="official-round">
+              <div class="section-heading"><div><h3>{{ historyRound.title }}</h3><p class="status-line">Conteo: {{ historyRound.status === 'published' ? 'publicado' : historyRound.status === 'closed' ? 'cerrado' : historyRound.status }}</p></div></div>
+              <div v-if="historyRound.results?.length" class="results-list compact-results">
+                <div v-for="result in historyRound.results" :key="result.optionId"><span>{{ result.label }}</span><strong>{{ result.count }}</strong></div>
+              </div>
+              <div v-if="historyRound.officialResult" class="declared-result">
+                <strong>Declaración {{ historyRound.officialResult.publishedAt ? 'publicada' : 'interna' }}</strong>
+                <p>Electos: {{ historyRound.officialResult.elected.map((person) => person.label).join(', ') }}</p>
+                <p v-if="historyRound.officialResult.note">Observación: {{ historyRound.officialResult.note }}</p>
+                <small>Registrada {{ formatDateTime(historyRound.officialResult.declaredAt) }} por {{ formatActor(historyRound.officialResult.declaredBy) }}</small>
+              </div>
+              <p v-else class="status-line">La mesa aún no ha registrado una declaración oficial.</p>
+              <form v-if="historyRound.status === 'closed' || historyRound.status === 'published'" class="official-form" @submit.prevent="saveOfficialResult(historyRound)">
+                <fieldset class="official-options"><legend>Persona(s) declarada(s) electa(s)</legend>
+                  <label v-for="option in historyRound.options" :key="option.id"><input v-model="officialSelections[historyRound.id]" type="checkbox" :value="option.id" />{{ option.label }}</label>
+                </fieldset>
+                <label>Observación o motivo (opcional)<textarea v-model="officialNotes[historyRound.id]" rows="2" maxlength="1000" placeholder="Ej. Decisión de desempate de la Asamblea"></textarea></label>
+                <div class="action-row">
+                  <button class="secondary" :disabled="loading">{{ historyRound.officialResult ? 'Corregir declaración' : 'Registrar resultado oficial' }}</button>
+                  <button v-if="historyRound.officialResult && !historyRound.officialResult.publishedAt && historyRound.status === 'published'" type="button" class="primary" :disabled="loading" @click="moderatorAction(`/moderator/rounds/${encodeURIComponent(historyRound.id)}/official-result/publish`)">Publicar declaración</button>
+                  <span v-else-if="historyRound.officialResult?.publishedAt" class="status-line">Visible al público</span>
+                </div>
+              </form>
+            </article>
+          </section>
         </template>
       </template>
     </template>
@@ -551,7 +610,8 @@ onUnmounted(() => { if (refreshTimer) window.clearInterval(refreshTimer); realti
         <h1>{{ assemblyStatus === 'completed' ? 'Asamblea finalizada' : round?.status === 'published' ? 'Resultados publicados' : round?.status === 'open' ? round.title : 'Sala de Asamblea' }}</h1>
         <p class="projector-subtitle">{{ assemblyStatus === 'completed' ? `Sesión concluida${completionTime ? ` · ${completionTime}` : ''}` : round?.status === 'open' ? 'Votación abierta' : round?.status === 'published' ? 'Resultados autorizados por la mesa' : 'Estado: ' + assemblyStatus }}</p>
         <div v-if="round?.status === 'published'" class="results-list"><div v-for="result in state?.results || []" :key="result.label"><span>{{ result.label }}</span><strong>{{ result.count }}</strong></div></div>
-        <div v-else class="projector-progress"><strong>{{ state?.participantCount ?? 0 }}</strong><span>participaciones registradas</span></div>
+        <section v-if="state?.officialResult" class="projector-official-result"><p class="eyebrow">RESULTADO DECLARADO POR LA MESA</p><h2>{{ state.officialResult.elected.map((person) => person.label).join(' · ') }}</h2><p v-if="state.officialResult.note">{{ state.officialResult.note }}</p><small>Declaración registrada {{ formatDateTime(state.officialResult.declaredAt) }}</small></section>
+        <div v-if="round?.status !== 'published'" class="projector-progress"><strong>{{ state?.participantCount ?? 0 }}</strong><span>participaciones registradas</span></div>
         <div v-if="lobbyStatus === 'lobby_open'" class="projector-lobby"><img v-if="qrImage" class="projector-qr" :src="qrImage" alt="Código QR para unirse a la Asamblea" /><div>Escanea el QR para unirte<p>Código: <strong>{{ code }}</strong></p></div></div>
       </section>
     </template>

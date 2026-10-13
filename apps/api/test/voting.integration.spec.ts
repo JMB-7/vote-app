@@ -88,6 +88,28 @@ test('database voting flow: unique concurrent cast, close gate, then explicit pu
     assert.equal(publishedSnapshot.results?.reduce((sum, option) => sum + option.count, 0), 1)
     const visible = await service.publicState(joinCode)
     assert.equal('results' in visible, true)
+    assert.equal('officialResult' in visible, false, 'publishing vote counts must not declare a winner')
+
+    const declared = await service.declareOfficialResult(round.id, { optionIds: [round.options[0].id], note: 'Decisión de la mesa' })
+    assert.deepEqual(declared.elected, [{ optionId: round.options[0].id, label: 'Option A' }])
+    assert.equal(declared.publishedAt, null)
+    assert.equal('officialResult' in await service.publicState(joinCode), false, 'an unpublished declaration stays private')
+    const moderatorView = await service.moderatorAssembly(assemblyId)
+    assert.deepEqual(moderatorView.rounds[0]?.officialResult?.elected, declared.elected)
+    assert.equal(moderatorView.rounds[0]?.officialResult?.declaredBy, 'shared_moderator_credential')
+    assert.equal(await prisma.auditEvent.count({ where: { roundId: round.id, action: 'round.official_result.declared' } }), 1)
+
+    await service.publishOfficialResult(round.id)
+    const publiclyDeclared = await service.publicState(joinCode)
+    assert.deepEqual(publiclyDeclared.officialResult?.elected, declared.elected)
+
+    const corrected = await service.declareOfficialResult(round.id, { optionIds: [round.options[1].id], note: 'Corrección de acta' })
+    assert.equal(corrected.publishedAt, null, 'a correction requires a fresh explicit publication')
+    assert.equal('officialResult' in await service.publicState(joinCode), false)
+    await service.publishOfficialResult(round.id)
+    assert.deepEqual((await service.publicState(joinCode)).officialResult?.elected, [{ optionId: round.options[1].id, label: 'Option B' }])
+    assert.equal(await prisma.auditEvent.count({ where: { roundId: round.id, action: 'round.official_result.corrected' } }), 1)
+    assert.equal(await prisma.auditEvent.count({ where: { roundId: round.id, action: 'round.official_result.published' } }), 2)
 
     await assert.rejects(service.completeAssembly(assemblyId, false as true), (error: unknown) =>
       error instanceof UnprocessableEntityException,
@@ -117,6 +139,15 @@ test('database voting flow: unique concurrent cast, close gate, then explicit pu
     const completedModeratorState = await service.moderatorAssembly(assemblyId)
     assert.equal(completedModeratorState.status, 'completed')
     assert.equal(completedModeratorState.completedAt, completed.completedAt)
+
+    const postCompletionCorrection = await service.declareOfficialResult(round.id, {
+      optionIds: [round.options[0].id, round.options[1].id], note: 'La mesa confirma dos personas electas',
+    })
+    assert.equal(postCompletionCorrection.publishedAt, null)
+    assert.equal('officialResult' in await service.publicState(joinCode), false)
+    await service.publishOfficialResult(round.id)
+    assert.deepEqual((await service.publicState(joinCode)).officialResult?.elected.map((item) => item.label), ['Option A', 'Option B'])
+    assert.equal(await prisma.auditEvent.count({ where: { roundId: round.id, action: 'round.official_result.corrected' } }), 2)
   } finally {
     if (assemblyId) await prisma.assembly.deleteMany({ where: { id: assemblyId } })
     await prisma.organization.deleteMany({ where: { id: organizationId } })
