@@ -52,6 +52,21 @@ test('nomination simple majority uses only the explicitly configured denominator
   assert.equal(recorded[1]?.basis, 'valid_votes')
 })
 
+test('valid-votes approval rejects aggregate votes above the eligible delegate roster', async () => {
+  let updated = false
+  const tx = {
+    round: { findUnique: async () => ({ assemblyId: 'assembly', category: 'committee', committeeType: 'nomination', committeeStage: 'approval', committeeConfiguration: { approvalDenominator: 'valid_votes' } }) },
+    committeeProposal: {
+      findFirst: async () => ({ id: 'proposal' }),
+      update: async () => { updated = true; return { id: 'proposal' } },
+    },
+    participantSession: { count: async () => 4 },
+  }
+  const voting = new VotingService({ $transaction: async (work: (value: unknown) => unknown) => work(tx) } as never, {} as never)
+  await assert.rejects(voting.recordCommitteeApproval('round', 'proposal', { yesVotes: 3, noVotes: 2 }), /superan el número de delegados elegibles/)
+  assert.equal(updated, false, 'impossible aggregate must not decide the proposal')
+})
+
 test('nomination configuration remains blocked when support or majority decisions are missing', async () => {
   const createdRound = { id: 'round', title: 'Comisión', format: 'multiple_choice', category: 'committee', committeeType: 'nomination', memberCount: 5, decisionNote: 'validada', committeeStage: 'configuration_required', committeeConfiguration: {}, countingRule: { kind: 'count_only' }, status: 'draft', options: [] }
   const tx = {

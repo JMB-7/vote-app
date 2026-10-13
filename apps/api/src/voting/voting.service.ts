@@ -593,7 +593,7 @@ export class VotingService {
       const eligibleCount = await tx.participantSession.count({ where: { assemblyId: round.assemblyId, status: 'active', assemblyRole: 'delegate', committeeEligible: true } })
       const denominator = basis === 'eligible_delegates' ? eligibleCount : input.yesVotes + input.noVotes
       if (!['eligible_delegates', 'valid_votes'].includes(String(basis))) throw new ConflictException('Falta validar la base de mayoría simple con Secretaría o la mesa')
-      if (basis === 'eligible_delegates' && input.yesVotes + input.noVotes > eligibleCount) throw new UnprocessableEntityException('Los votos registrados superan el número de delegados elegibles confirmados')
+      if (input.yesVotes + input.noVotes > eligibleCount) throw new UnprocessableEntityException('Los votos registrados superan el número de delegados elegibles confirmados')
       const approved = denominator > 0 && input.yesVotes * 2 > denominator
       const decided = await tx.committeeProposal.update({ where: { id: proposalId }, data: { status: approved ? 'approved' : 'rejected', approvalYes: input.yesVotes, approvalNo: input.noVotes, decidedAt: new Date() } })
       await tx.auditEvent.create({ data: { assemblyId: round.assemblyId, roundId, actorRef: MODERATOR_ACTOR, action: 'committee.nomination.approval_recorded', metadata: { proposalId, yesVotes: input.yesVotes, noVotes: input.noVotes, denominator, basis: String(basis), approved } } })
