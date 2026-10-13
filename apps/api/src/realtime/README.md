@@ -8,8 +8,8 @@
 - El código de Asamblea solo permite estado/canal público de proyección incluso después de cerrar el lobby; `/join` aplica por separado el bloqueo de ingreso. No da acceso a moderación ni sustituye al token de participante. El credential del moderador viaja en el campo `auth` del handshake, no en query/URL.
 - Inyectar `RealtimeGateway` en un adaptador de eventos de dominio de Fase 02 y llamar sus métodos tipados (`lobbyState`, `participantJoined`, `roundOpened`, etc.) después de la confirmación de persistencia/transacción. No enviar cuerpos HTTP, tokens, selección individual ni identificadores de sesión a canales compartidos.
 - Los eventos son avisos sin garantía de entrega. El cliente recupera estado autoritativo mediante `GET /api/v1/assemblies/:assemblyCode/public-state`, `GET /api/v1/moderator/assemblies/:assemblyId` o `GET /api/v1/participant/me` tras conectar y reconectar; nunca inferir confirmación de voto desde Socket.IO.
-- `participant.joined` y cambios con nombres se emiten solo a moderadores hasta que Secretaría confirme explícitamente el alcance de nombres del proyector. El estado agregado del lobby sí puede ir al canal público.
-- La UI no debe recibir lista operativa de quién participó. La decisión está pendiente; `participation.count` transporta solo totales agregados a público y moderación.
+- `participant.joined` y cambios con nombres se emiten solo a moderadores. Mientras el lobby está abierto, el proyector autorizado por el código público recupera nombres activos y el total mediante `public-state`; al iniciar una papeleta, esa respuesta deja de incluir la lista. El canal público solo recibe eventos agregados.
+- La UI pública no recibe la lista operativa de quién emitió un voto. `participation.count` transporta solo totales agregados a público y moderación; los nombres del lobby no incluyen estado de participación.
 
 ## Contrato de conexión
 

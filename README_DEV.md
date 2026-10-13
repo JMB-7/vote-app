@@ -65,7 +65,7 @@ Para preparar una instalación candidata reproducible con Caddy/HTTPS, servicios
 ## API implementada
 
 - Delegado: `POST /api/v1/assemblies/:assemblyCode/join`, `GET /api/v1/participant/me` y `POST /api/v1/participant/rounds/:roundId/vote`.
-- Proyector: `GET /api/v1/assemblies/:assemblyCode/public-state`; expone solo conteos agregados y resultados después de publicar. La lista de nombres en proyector sigue pendiente de validación.
+- Proyector: `GET /api/v1/assemblies/:assemblyCode/public-state`; durante el ingreso abierto expone nombres y total de participantes. Cuando inicia una papeleta, oculta la lista y expone solo progreso agregado; los resultados por opción aparecen después de su publicación.
 - Moderador: crear/consultar Asamblea, cerrar lobby, corregir/retirar participante, preparar/abrir/cerrar ronda y publicar resultados bajo `/api/v1/moderator/*`.
 - La única regla de conteo implementada es `kind: count_only`: se agregan votos por opción tras publicación y no se proclama ganador. La mayoría, abstención, nulidad, empate, repetición y cancelación requieren decisión institucional.
 

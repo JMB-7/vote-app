@@ -7,6 +7,7 @@
 - Moderador prepara, abre y cierra papeletas y publica resultados explícitamente.
 - No hay temporizador, resultados parciales, edición de voto emitido ni proclamación/quórum automático.
 - Una respuesta por sesión participante y ronda; la opción no debe tener vínculo consultable a la identidad.
+- Durante el ingreso abierto, el proyector muestra tanto los nombres de quienes ya ingresaron como el total de participantes; al iniciar una papeleta, los nombres se ocultan y solo se muestra progreso agregado.
 - Asociación queda contemplada para evolución futura; iglesias y producto multi-organización activo quedan fuera de V1.
 
 ## Pendiente de validar; no codificar como regla institucional
@@ -19,7 +20,6 @@
 | Quién puede operar moderación y cómo se acredita/entrega su acceso | Secretaría/mesa | No desplegar panel protegido hasta validar mecanismo y responsables. No incluir secretos en URL ni cliente delegado. |
 | Retención y eliminación de nombres, participación, votos y bitácoras | Responsable institucional de privacidad/retención por determinar | No automatizar borrado ni respaldos de retención definitiva antes de tener plazos y alcance aprobados. |
 | Reapertura del ingreso y condiciones antes de una votación | Secretaría/mesa | El scope contempla reapertura explícita antes de votar, con auditoría; Fase 01 pide confirmar el permiso. No asumirlo habilitado hasta confirmar. |
-| Lista completa de nombres en proyector o solo cantidad durante lobby | Secretaría/mesa | El scope incluye lista en lobby; confirmar alcance, presentación y privacidad antes de publicar nombres. |
 | Wi-Fi, dominio, HTTPS y contingencia en el recinto | Operación/organización del evento | No declarar listo para evento ni fijar procedimiento de continuidad sin confirmación; preparar opción de papeleta física según mesa. |
 
 ## Límites aceptados de V1
