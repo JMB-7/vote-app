@@ -72,3 +72,32 @@ test('nomination configuration remains blocked when support or majority decision
   assert.equal(result.committeeStage, 'configuration_required')
   assert.deepEqual(result.options, [], 'no ballot is created while institutional rules are unresolved')
 })
+
+test('cannot begin nomination proposals when the support minimum exceeds eligible delegates', async () => {
+  const createdRound = { id: 'round', title: 'Comisión', format: 'multiple_choice', category: 'committee', committeeType: 'nomination', memberCount: 5, decisionNote: 'validada', committeeStage: 'configuration_required', committeeConfiguration: {}, countingRule: { kind: 'count_only' }, status: 'draft', options: [] }
+  const tx = {
+    $queryRaw: async () => [{ id: 'assembly', status: 'lobby_closed' }],
+    participantSession: { count: async ({ where }: { where: { assemblyRole?: string } }) => where.assemblyRole === 'delegate' ? 5 : 1 },
+    round: { create: async ({ data }: { data: { committeeStage: string } }) => { createdRound.committeeStage = data.committeeStage as typeof createdRound.committeeStage; return createdRound } },
+    auditEvent: { create: async () => ({}) },
+  }
+  const voting = new VotingService({ $transaction: async (work: (value: unknown) => unknown) => work(tx), round: { findUniqueOrThrow: async () => createdRound } } as never, {} as never)
+  const result = await voting.createRound('assembly', {
+    ...base, options: [], category: 'committee', committeeType: 'nomination', memberCount: 5, decisionNote: 'validada',
+    committeeConfiguration: { institutionallyValidated: true, validationReference: 'ACTA-1', eligibilityRule: 'delegados elegibles', votingMethod: 'secreta', proposalRule: 'eligible_delegate_only', supportRule: 'one_per_eligible_delegate', supportMinimum: 6, approvalDenominator: 'eligible_delegates' },
+  })
+  assert.equal(result.committeeStage, 'configuration_required')
+})
+
+test('closing nomination supports rechecks the active eligible roster before changing proposal status', async () => {
+  let proposalsRead = false
+  const tx = {
+    $queryRaw: async () => [{ id: 'round', assembly_id: 'assembly', status: 'draft', committee_stage: 'support', committee_type: 'nomination', member_count: 5, committee_configuration: { supportMinimum: 4 } }],
+    participantSession: { count: async () => 3 },
+    committeeProposal: { findMany: async () => { proposalsRead = true; return [{ id: 'proposal', _count: { supporters: 4 } }] }, update: async () => assert.fail('must not mutate proposal status') },
+    round: { update: async () => assert.fail('must not advance the stage') },
+  }
+  const voting = new VotingService({ $transaction: async (work: (value: unknown) => unknown) => work(tx) } as never, {} as never)
+  await assert.rejects(voting.advanceCommitteeStage('round', 'approval'), /mínimo configurado \(4\) supera los 3 delegados elegibles activos/)
+  assert.equal(proposalsRead, false, 'reject before reading or mutating support results')
+})

@@ -398,7 +398,7 @@ export class VotingService {
     )
     const nominationReady = input.committeeType === 'nomination' && Boolean(
       validated && rules.proposalRule === 'eligible_delegate_only' && rules.supportRule === 'one_per_eligible_delegate' &&
-      rules.supportMinimum && rules.approvalDenominator,
+      Number.isInteger(Number(rules.supportMinimum)) && Number(rules.supportMinimum) > 0 && rules.approvalDenominator,
     )
     let stage: 'configuration_required' | 'proposals' | 'election' | null = category !== 'committee' ? null
       : input.committeeType === 'nomination'
@@ -416,7 +416,7 @@ export class VotingService {
         const roleCounts = await Promise.all((['president', 'vice_president', 'secretary', 'treasurer'] as const).map((assemblyRole) =>
           tx.participantSession.count({ where: { assemblyId, status: 'active', assemblyRole } })))
         const eligibleCount = await tx.participantSession.count({ where: { assemblyId, status: 'active', assemblyRole: 'delegate', committeeEligible: true } })
-        if (roleCounts.some((count) => count < 1) || eligibleCount < (input.memberCount ?? 5)) stage = 'configuration_required'
+        if (roleCounts.some((count) => count < 1) || eligibleCount < (input.memberCount ?? 5) || Number(rules.supportMinimum) > eligibleCount) stage = 'configuration_required'
       }
       if (category === 'committee' && input.committeeType !== 'nomination' && validated) {
         const candidateIds = options.map((option) => option.candidateParticipantId)
@@ -457,7 +457,7 @@ export class VotingService {
       `
       const round = rows[0]
       if (!round || round.committee_type === null) throw new NotFoundException('Comisión no encontrada')
-      if (round.status !== 'draft' || !['configuration_required', 'proposals'].includes(round.committee_stage ?? '')) throw new ConflictException('La configuración ya quedó congelada al iniciar el flujo')
+      if (round.status !== 'draft' || !['configuration_required', 'proposals', 'support'].includes(round.committee_stage ?? '')) throw new ConflictException('La configuración ya quedó congelada al iniciar la votación')
       const memberCount = input.memberCount ?? round.member_count
       const decisionNote = input.decisionNote?.trim() ?? round.decision_note
       const config = { ...(round.committee_configuration ?? {}), ...(input.committeeConfiguration ?? {}) }
@@ -468,14 +468,15 @@ export class VotingService {
       if (validated && ['finance', 'statutes'].includes(round.committee_type) && ![3, 5].includes(memberCount ?? 0)) {
         throw new UnprocessableEntityException('Finanzas y Estatutos requieren tres o cinco integrantes confirmados')
       }
-      let nextStage: 'configuration_required' | 'proposals' | 'election' = 'configuration_required'
+      let nextStage: 'configuration_required' | 'proposals' | 'support' | 'election' = 'configuration_required'
       if (validated && memberCount) {
         if (round.committee_type === 'nomination') {
-          const ready = Boolean(config.proposalRule === 'eligible_delegate_only' && config.supportRule === 'one_per_eligible_delegate' && Number(config.supportMinimum) >= 1 && ['eligible_delegates', 'valid_votes'].includes(String(config.approvalDenominator)))
+          const supportMinimum = Number(config.supportMinimum)
+          const ready = Boolean(config.proposalRule === 'eligible_delegate_only' && config.supportRule === 'one_per_eligible_delegate' && Number.isInteger(supportMinimum) && supportMinimum >= 1 && ['eligible_delegates', 'valid_votes'].includes(String(config.approvalDenominator)))
           const roleCounts = await Promise.all((['president', 'vice_president', 'secretary', 'treasurer'] as const).map((assemblyRole) =>
             tx.participantSession.count({ where: { assemblyId: round.assembly_id, status: 'active', assemblyRole } })))
           const eligibleCount = await tx.participantSession.count({ where: { assemblyId: round.assembly_id, status: 'active', assemblyRole: 'delegate', committeeEligible: true } })
-          if (ready && roleCounts.every((count) => count > 0) && eligibleCount >= memberCount) nextStage = 'proposals'
+          if (ready && roleCounts.every((count) => count > 0) && eligibleCount >= memberCount && supportMinimum <= eligibleCount) nextStage = round.committee_stage === 'support' ? 'support' : 'proposals'
         } else if (round.committee_type === 'finance' || round.committee_type === 'statutes') {
           const eligibleOptions = await tx.ballotOption.count({ where: { roundId, candidateParticipantId: { not: null }, candidateParticipant: { is: { status: 'active', assemblyRole: 'delegate', committeeEligible: true } } } })
           const optionCount = await tx.ballotOption.count({ where: { roundId } })
@@ -499,7 +500,11 @@ export class VotingService {
         select: { id: true, committeeStage: true, memberCount: true, decisionNote: true, committeeConfiguration: true },
       })
       await tx.auditEvent.create({ data: { assemblyId: round.assembly_id, roundId, actorRef: MODERATOR_ACTOR, action: nextStage === 'configuration_required' ? 'committee.configuration.blocked' : 'committee.configuration.validated', metadata: { stage: nextStage, committeeType: round.committee_type, memberCount } } })
-      return { ...updated, ready: nextStage !== 'configuration_required', message: nextStage === 'configuration_required' ? 'Falta completar o validar decisiones institucionales y confirmar la elegibilidad requerida.' : 'Configuración validada; puede continuar el flujo.' }
+      const eligibleCount = round.committee_type === 'nomination'
+        ? await tx.participantSession.count({ where: { assemblyId: round.assembly_id, status: 'active', assemblyRole: 'delegate', committeeEligible: true } })
+        : null
+      const impossibleMinimum = round.committee_type === 'nomination' && Number(config.supportMinimum) > (eligibleCount ?? 0)
+      return { ...updated, ready: nextStage !== 'configuration_required', message: impossibleMinimum ? `El mínimo de apoyos (${Number(config.supportMinimum)}) supera los ${eligibleCount} delegados elegibles activos; corrígelo antes de continuar.` : nextStage === 'configuration_required' ? 'Falta completar o validar decisiones institucionales y confirmar la elegibilidad requerida.' : 'Configuración validada; puede continuar el flujo.' }
     })
   }
 
@@ -554,9 +559,11 @@ export class VotingService {
         if (!proposalCount) throw new ConflictException('Registra al menos una propuesta antes de iniciar apoyos')
         await tx.round.update({ where: { id: roundId }, data: { committeeStage: 'support' } })
       } else if (stage === 'approval' && round.committee_stage === 'support') {
-        const proposals = await tx.committeeProposal.findMany({ where: { roundId, status: 'proposed' }, include: { _count: { select: { supporters: true } } } })
+        const eligibleCount = await tx.participantSession.count({ where: { assemblyId: round.assembly_id, status: 'active', assemblyRole: 'delegate', committeeEligible: true } })
         const minimum = Number(config.supportMinimum)
         if (!Number.isInteger(minimum) || minimum < 1) throw new ConflictException('Falta validar el mínimo de apoyos institucional')
+        if (minimum > eligibleCount) throw new ConflictException(`No se pueden cerrar los apoyos: el mínimo configurado (${minimum}) supera los ${eligibleCount} delegados elegibles activos. Corrige la configuración o valida el padrón.`)
+        const proposals = await tx.committeeProposal.findMany({ where: { roundId, status: 'proposed' }, include: { _count: { select: { supporters: true } } } })
         for (const proposal of proposals) {
           await tx.committeeProposal.update({ where: { id: proposal.id }, data: { status: proposal._count.supporters >= minimum ? 'supported' : 'rejected' } })
         }
