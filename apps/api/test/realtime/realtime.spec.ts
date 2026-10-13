@@ -102,6 +102,25 @@ test('removing a participant closes their authenticated sockets', () => {
   assert.deepEqual(disconnectedRooms, ['participant:session-3'])
 })
 
+test('assembly completion reaches public, moderator, and participant viewers with timestamp', () => {
+  const emissions: Array<{ rooms: unknown; event: string; payload: unknown }> = []
+  const server = {
+    to(rooms: unknown) {
+      return { emit(event: string, payload: unknown) { emissions.push({ rooms, event, payload }) } }
+    },
+  }
+  const gateway = new RealtimeGateway({ async authenticate() { throw new Error() } })
+  Object.assign(gateway, { server })
+
+  gateway.assemblyState('assembly-7', { status: 'completed', completedAt: '2026-10-02T18:00:00.000Z' })
+
+  assert.deepEqual(emissions, [{
+    rooms: ['assembly:assembly-7:public', 'assembly:assembly-7:moderators', 'assembly:assembly-7:participants'],
+    event: 'assembly.state',
+    payload: { status: 'completed', completedAt: '2026-10-02T18:00:00.000Z' },
+  }])
+})
+
 test('participant snapshot includes aggregates only after publication', () => {
   const emissions: Array<{ event: string; payload: unknown }> = []
   const server = {

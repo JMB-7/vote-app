@@ -91,7 +91,7 @@ export class VotingService {
   async participantState(participantId: string) {
     const participant = await this.prisma.participantSession.findUnique({
       where: { id: participantId },
-      include: { assembly: { select: { status: true } } },
+      include: { assembly: { select: { status: true, completedAt: true } } },
     })
     if (!participant || participant.status !== 'active') throw new NotFoundException('Sesión no encontrada')
     const round = await this.prisma.round.findFirst({
@@ -111,6 +111,7 @@ export class VotingService {
     const results = round?.status === 'published' ? await this.publishedResults(round.id) : undefined
     return {
       assemblyStatus: participant.assembly.status,
+      assemblyCompletedAt: participant.assembly.completedAt?.toISOString() ?? null,
       lobbyStatus: participant.assembly.status === 'lobby_open' ? 'open' as const : 'closed' as const,
       openRound,
       participationStatus: participation ? 'recorded' as const : 'pending' as const,
@@ -170,7 +171,7 @@ export class VotingService {
     ])
     const result = round?.status === 'published' ? await this.publishedResults(round.id) : undefined
     return {
-      assembly: { id: assembly.id, name: assembly.name, status: assembly.status },
+      assembly: { id: assembly.id, name: assembly.name, status: assembly.status, completedAt: assembly.completedAt?.toISOString() ?? null },
       participantCount,
       round: round ? { id: round.id, title: round.title, status: round.status } : null,
       ...(result ? { results: result } : {}),
@@ -200,6 +201,7 @@ export class VotingService {
       id: assembly.id,
       name: assembly.name,
       status: assembly.status,
+      completedAt: assembly.completedAt?.toISOString() ?? null,
       participants: assembly.participants,
       participantCount: assembly.participants.length,
       rounds,
@@ -214,6 +216,7 @@ export class VotingService {
       `
       const assembly = rows[0]
       if (!assembly) throw new NotFoundException('Asamblea no encontrada')
+      if (assembly.status === 'completed') throw new ConflictException('La Asamblea ya finalizó; no se permiten cambios operativos')
       if (assembly.status === 'lobby_closed' || assembly.status === 'in_progress') return { id: assembly.id, status: assembly.status, changed: false }
       if (assembly.status !== 'lobby_open') throw new ConflictException('La Asamblea no permite cerrar el ingreso')
       const updated = await tx.assembly.update({ where: { id: assemblyId }, data: { status: 'lobby_closed' }, select: { id: true, status: true } })
@@ -227,15 +230,52 @@ export class VotingService {
     return result
   }
 
+  async completeAssembly(assemblyId: string, confirmation: true) {
+    const completed = await this.prisma.$transaction(async (tx) => {
+      const rows = await tx.$queryRaw<Array<{ id: string; status: AssemblyStatus; completed_at: Date | null; updated_at: Date }>>`
+        SELECT id, status, completed_at, updated_at FROM assemblies WHERE id = ${assemblyId}::uuid FOR UPDATE
+      `
+      const assembly = rows[0]
+      if (!assembly) throw new NotFoundException('Asamblea no encontrada')
+      if (assembly.status === 'completed') {
+        return { id: assembly.id, status: assembly.status, completedAt: assembly.completed_at ?? assembly.updated_at, changed: false }
+      }
+      if (assembly.status === 'preparing') throw new ConflictException('La Asamblea aún no ha comenzado y no puede finalizarse')
+      const openRound = await tx.round.findFirst({ where: { assemblyId, status: 'open' }, select: { id: true } })
+      if (openRound) throw new ConflictException('Cierra la papeleta abierta antes de finalizar la Asamblea')
+      if (confirmation !== true) throw new UnprocessableEntityException('Confirma explícitamente la finalización de la Asamblea')
+      const completedAt = new Date()
+      const updated = await tx.assembly.update({
+        where: { id: assemblyId },
+        data: { status: 'completed', completedAt },
+        select: { id: true, status: true, completedAt: true },
+      })
+      await tx.auditEvent.create({
+        data: { assemblyId, actorRef: MODERATOR_ACTOR, action: 'assembly.completed', occurredAt: completedAt },
+      })
+      return { id: updated.id, status: updated.status, completedAt, changed: true }
+    })
+    if (completed.changed) {
+      this.realtime.assemblyState(assemblyId, { status: 'completed', completedAt: completed.completedAt.toISOString() })
+    }
+    return { id: completed.id, status: completed.status, completedAt: completed.completedAt.toISOString() }
+  }
+
   async patchParticipant(participantId: string, input: { firstName?: string; lastName?: string; status?: 'removed' }) {
-    const current = await this.prisma.participantSession.findUnique({ where: { id: participantId }, include: { assembly: { select: { status: true } } } })
-    if (!current) throw new NotFoundException('Participante no encontrado')
-    const hasVoted = await this.prisma.participation.count({ where: { participantSessionId: participantId } }) > 0
-    if (current.assembly.status === 'in_progress' || hasVoted) throw new ConflictException('La lista ya no admite cambios después de iniciar las rondas')
+    const identity = await this.prisma.participantSession.findUnique({ where: { id: participantId }, select: { assemblyId: true } })
+    if (!identity) throw new NotFoundException('Participante no encontrado')
     if (input.firstName === undefined && input.lastName === undefined && input.status === undefined) {
       throw new UnprocessableEntityException('Indica un nombre para corregir o status: removed')
     }
     const updated = await this.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM assemblies WHERE id = ${identity.assemblyId}::uuid FOR UPDATE`
+      const assembly = await tx.assembly.findUnique({ where: { id: identity.assemblyId }, select: { status: true } })
+      if (!assembly) throw new NotFoundException('Asamblea no encontrada')
+      if (assembly.status === 'completed') throw new ConflictException('La Asamblea ya finalizó; no se permiten cambios operativos')
+      const hasVoted = await tx.participation.count({ where: { participantSessionId: participantId } }) > 0
+      if (assembly.status === 'in_progress' || hasVoted) throw new ConflictException('La lista ya no admite cambios después de iniciar las rondas')
+      const current = await tx.participantSession.findUnique({ where: { id: participantId }, select: { id: true } })
+      if (!current) throw new NotFoundException('Participante no encontrado')
       const value = await tx.participantSession.update({
         where: { id: participantId },
         data: {
@@ -245,13 +285,14 @@ export class VotingService {
         },
         select: { id: true, assemblyId: true, firstName: true, lastName: true, status: true },
       })
-      await tx.auditEvent.create({ data: { assemblyId: current.assemblyId, actorRef: MODERATOR_ACTOR, action: input.status === 'removed' ? 'participant.removed' : 'participant.corrected', metadata: { participantId } } })
+      await tx.auditEvent.create({ data: { assemblyId: identity.assemblyId, actorRef: MODERATOR_ACTOR, action: input.status === 'removed' ? 'participant.removed' : 'participant.corrected', metadata: { participantId } } })
       return value
     })
     if (updated.status === 'removed') {
       this.realtime.participantRemoved(updated.assemblyId, updated.id)
       const count = await this.prisma.participantSession.count({ where: { assemblyId: updated.assemblyId, status: 'active' } })
-      this.realtime.lobbyState(updated.assemblyId, { status: current.assembly.status === 'lobby_open' ? 'open' : 'closed', participantCount: count })
+      const assembly = await this.prisma.assembly.findUniqueOrThrow({ where: { id: updated.assemblyId }, select: { status: true } })
+      this.realtime.lobbyState(updated.assemblyId, { status: assembly.status === 'lobby_open' ? 'open' : 'closed', participantCount: count })
     } else this.realtime.participantUpdated(updated.assemblyId, { participantId: updated.id, firstName: updated.firstName, lastName: updated.lastName })
     return { id: updated.id, firstName: updated.firstName, lastName: updated.lastName, status: updated.status }
   }
@@ -271,6 +312,7 @@ export class VotingService {
       `
       const assembly = rows[0]
       if (!assembly) throw new NotFoundException('Asamblea no encontrada')
+      if (assembly.status === 'completed') throw new ConflictException('La Asamblea ya finalizó; no se permiten nuevas papeletas')
       if (!['lobby_closed', 'in_progress'].includes(assembly.status)) throw new ConflictException('Cierra el ingreso antes de preparar una papeleta')
       const created = await tx.round.create({
         data: {
@@ -299,6 +341,7 @@ export class VotingService {
       if (round.status !== 'draft') throw new ConflictException('La ronda no se puede abrir desde su estado actual')
       await tx.$queryRaw`SELECT id FROM assemblies WHERE id = ${round.assembly_id}::uuid FOR UPDATE`
       const assembly = await tx.assembly.findUnique({ where: { id: round.assembly_id }, select: { status: true } })
+      if (assembly?.status === 'completed') throw new ConflictException('La Asamblea ya finalizó; no se pueden abrir papeletas')
       if (!assembly || !['lobby_closed', 'in_progress'].includes(assembly.status)) throw new ConflictException('El ingreso debe estar cerrado antes de abrir una papeleta')
       const otherOpen = await tx.round.findFirst({ where: { assemblyId: round.assembly_id, status: 'open' }, select: { id: true } })
       if (otherOpen) throw new ConflictException('Ya hay una papeleta abierta')
@@ -324,6 +367,9 @@ export class VotingService {
       `
       const current = rows[0]
       if (!current) throw new NotFoundException('Ronda no encontrada')
+      await tx.$queryRaw`SELECT id FROM assemblies WHERE id = ${current.assembly_id}::uuid FOR UPDATE`
+      const assembly = await tx.assembly.findUnique({ where: { id: current.assembly_id }, select: { status: true } })
+      if (assembly?.status === 'completed') throw new ConflictException('La Asamblea ya finalizó; no se pueden modificar sus papeletas')
       if (current.status === 'closed' || current.status === 'published') return { id: current.id, assemblyId: current.assembly_id, status: current.status, changed: false }
       if (current.status !== 'open') throw new ConflictException('Solo se puede cerrar una papeleta abierta')
       const updated = await tx.round.update({ where: { id: roundId }, data: { status: 'closed', closedAt: new Date() }, select: { id: true, assemblyId: true, status: true } })
@@ -351,7 +397,11 @@ export class VotingService {
     let publishedNow = false
     if (current.status === 'closed') {
       await this.prisma.$transaction(async (tx) => {
-        await tx.$queryRaw`SELECT id FROM rounds WHERE id = ${roundId}::uuid FOR UPDATE`
+        const roundRows = await tx.$queryRaw<Array<{ assembly_id: string }>>`SELECT assembly_id FROM rounds WHERE id = ${roundId}::uuid FOR UPDATE`
+        if (!roundRows[0]) throw new NotFoundException('Ronda no encontrada')
+        await tx.$queryRaw`SELECT id FROM assemblies WHERE id = ${roundRows[0].assembly_id}::uuid FOR UPDATE`
+        const assembly = await tx.assembly.findUnique({ where: { id: roundRows[0].assembly_id }, select: { status: true } })
+        if (assembly?.status === 'completed') throw new ConflictException('La Asamblea ya finalizó; no se pueden modificar sus resultados')
         const latest = await tx.round.findUniqueOrThrow({ where: { id: roundId }, select: { status: true } })
         if (latest.status === 'published') return
         if (latest.status !== 'closed') throw new ConflictException('La papeleta debe estar cerrada para publicar')

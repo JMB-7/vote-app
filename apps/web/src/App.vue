@@ -4,7 +4,8 @@ import QRCode from 'qrcode'
 import { io, type Socket } from 'socket.io-client'
 
 type PublicState = {
-  assembly?: { id?: string; name?: string; status?: string; lobbyStatus?: string }
+  assembly?: { id?: string; name?: string; status?: string; completedAt?: string | null; lobbyStatus?: string }
+  assemblyCompletedAt?: string | null
   status?: string
   lobbyStatus?: string
   participants?: Array<{ id: string; firstName: string; lastName: string }>
@@ -46,6 +47,10 @@ const role = computed(() => route.value.startsWith('/moderator') ? 'moderator' :
 const assemblyStatus = computed(() => state.value?.assembly?.status || state.value?.status || 'preparing')
 const lobbyStatus = computed(() => state.value?.assembly?.lobbyStatus || (state.value?.lobbyStatus === 'open' || assemblyStatus.value === 'lobby_open' ? 'lobby_open' : 'lobby_closed'))
 const round = computed(() => state.value?.currentRound)
+const assemblyCompletedAt = computed(() => state.value?.assembly?.completedAt || state.value?.assemblyCompletedAt || null)
+const completionTime = computed(() => assemblyCompletedAt.value
+  ? new Intl.DateTimeFormat('es-HN', { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(assemblyCompletedAt.value))
+  : '')
 const reviewedOption = computed(() => round.value?.options?.find((option) => option.id === selectedOption.value))
 
 watch(reviewingVote, (reviewing) => {
@@ -99,7 +104,7 @@ function normalizeState(value: Record<string, any>): PublicState {
   } : undefined
   const assembly = value.assembly || (value.assemblyStatus
     ? { status: value.assemblyStatus }
-    : value.id ? { id: value.id, name: value.name, status: value.status } : undefined)
+    : value.id ? { id: value.id, name: value.name, status: value.status, completedAt: value.completedAt ?? null } : undefined)
   return {
     ...value,
     assembly,
@@ -233,6 +238,23 @@ async function moderatorAction(path: string, method = 'POST', body?: unknown) {
   try {
     await request(path, { method, ...(body === undefined ? {} : { body: JSON.stringify(body) }) }, moderatorToken.value)
     notice.value = 'Acción registrada.'
+    succeeded = true
+  } catch (e) { error.value = (e as Error).message }
+  finally { loading.value = false }
+  if (succeeded) await refresh()
+}
+
+async function completeAssembly() {
+  if (!assemblyId.value || assemblyStatus.value === 'completed' || round.value?.status === 'open') return
+  if (!window.confirm('¿Finalizar la Asamblea? Confirma solo después de que la mesa haya aprobado el cierre. La sesión quedará en modo de consulta.')) return
+  error.value = ''
+  loading.value = true
+  let succeeded = false
+  try {
+    await request(`/moderator/assemblies/${encodeURIComponent(assemblyId.value)}/complete`, {
+      method: 'POST', body: JSON.stringify({ confirmation: true }),
+    }, moderatorToken.value)
+    notice.value = 'La Asamblea quedó finalizada y disponible en modo de consulta.'
     succeeded = true
   } catch (e) { error.value = (e as Error).message }
   finally { loading.value = false }
@@ -381,7 +403,8 @@ onUnmounted(() => { if (refreshTimer) window.clearInterval(refreshTimer); realti
       </section>
       <section v-else class="card participant-card">
         <p class="eyebrow">{{ state?.assembly?.name || 'ASAMBLEA' }}</p>
-        <h1>{{ round?.status === 'open' ? round.title : 'Sala de espera' }}</h1>
+        <h1>{{ assemblyStatus === 'completed' ? 'Asamblea finalizada' : round?.status === 'open' ? round.title : 'Sala de espera' }}</h1>
+        <div v-if="assemblyStatus === 'completed'" class="status-panel assembly-completed" role="status"><span class="status-dot"></span><div><strong>La sesión concluyó</strong><p>Esta Asamblea está en modo de consulta.<template v-if="completionTime"> Se finalizó {{ completionTime }}.</template></p></div></div>
         <template v-if="state?.participationStatus === 'recorded'">
           <div class="status-panel"><span class="status-dot"></span><div><strong>Tu participación está registrada</strong><p>La papeleta fue confirmada y no puede cambiarse. No se muestra aquí la opción seleccionada.</p></div></div>
         </template>
@@ -436,6 +459,8 @@ onUnmounted(() => { if (refreshTimer) window.clearInterval(refreshTimer); realti
             <div class="card metric"><span>Participación</span><strong>{{ state?.participantCount ?? 0 }}<small v-if="state?.eligibleCount"> / {{ state.eligibleCount }}</small></strong></div>
             <div class="card metric"><span>Ingreso</span><strong>{{ lobbyStatus === 'lobby_open' ? 'Abierto' : 'Cerrado' }}</strong></div>
           </section>
+          <section v-if="assemblyStatus === 'completed'" class="status-panel assembly-completed" role="status"><span class="status-dot"></span><div><strong>Asamblea finalizada</strong><p>El sistema está en modo de consulta.<template v-if="completionTime"> Se registró {{ completionTime }}.</template></p></div></section>
+          <template v-else>
           <section class="card"><div class="section-heading"><div><p class="eyebrow">INGRESO</p><h2>Participantes</h2></div><button class="secondary" @click="refresh">Actualizar lista</button></div>
             <ul class="participant-list"><li v-for="person in state?.participants || []" :key="person.id"><span>{{ person.firstName }} {{ person.lastName }}</span><span v-if="assemblyStatus === 'lobby_open' || assemblyStatus === 'lobby_closed'" class="person-actions"><button class="link-button" @click="editParticipant(person)">Corregir</button><button class="link-button remove-link" @click="moderatorAction(`/moderator/participants/${encodeURIComponent(person.id)}`, 'PATCH', { status: 'removed' })">Retirar</button></span></li><li v-if="!state?.participants?.length" class="empty">La lista aparecerá aquí cuando se unan.</li></ul>
             <div class="action-row"><button v-if="lobbyStatus === 'lobby_open'" class="secondary" :disabled="loading" @click="moderatorAction(`/moderator/assemblies/${assemblyId}/lobby`, 'PATCH', { status: 'lobby_closed' })">Cerrar ingreso</button><span v-else class="status-line">El ingreso está cerrado.</span><a v-if="code" class="text-link" :href="`/?join=${encodeURIComponent(code)}`">Código: {{ code }}</a></div>
@@ -451,6 +476,8 @@ onUnmounted(() => { if (refreshTimer) window.clearInterval(refreshTimer); realti
             <div class="action-row" v-if="round"><button v-if="round.status === 'draft'" class="primary" @click="moderatorAction(`/moderator/rounds/${round.id}/open`)">Abrir papeleta</button><button v-if="round.status === 'open'" class="danger" @click="moderatorAction(`/moderator/rounds/${round.id}/close`)">Cerrar papeleta</button><button v-if="round.status === 'closed'" class="primary" @click="moderatorAction(`/moderator/rounds/${round.id}/publish`)">Publicar resultados</button></div>
             <p class="privacy-note">Los resultados por opción permanecen ocultos hasta que el moderador los publique.</p>
           </section>
+          <section v-if="assemblyStatus !== 'preparing'" class="card assembly-close"><p class="eyebrow">CIERRE DE SESIÓN</p><h2>Finalizar Asamblea</h2><p>Registra el cierre después de que la mesa haya aprobado la decisión. Se conservarán resultados y registros para consulta.</p><p v-if="round?.status === 'open'" class="status-line">Cierra la papeleta abierta antes de finalizar la Asamblea.</p><button class="danger" :disabled="loading || round?.status === 'open'" @click="completeAssembly">Finalizar Asamblea</button></section>
+          </template>
         </template>
       </template>
     </template>
@@ -459,8 +486,8 @@ onUnmounted(() => { if (refreshTimer) window.clearInterval(refreshTimer); realti
       <section v-if="!code" class="card join-card"><p class="eyebrow">PANTALLA PÚBLICA</p><h1>Proyector</h1><p class="lead">Ingresa el código de la sala para mostrar el estado permitido de la Asamblea.</p><form @submit.prevent="go(`/projector?code=${encodeURIComponent(code)}`)"><label>Código de sala<input v-model="code" required /></label><button class="primary">Mostrar sala</button></form></section>
       <section v-else class="projector-content">
         <p class="eyebrow">ASDMR · UNIÓN HONDUREÑA</p>
-        <h1>{{ round?.status === 'published' ? 'Resultados publicados' : round?.status === 'open' ? round.title : 'Sala de Asamblea' }}</h1>
-        <p class="projector-subtitle">{{ round?.status === 'open' ? 'Votación abierta' : round?.status === 'published' ? 'Resultados autorizados por la mesa' : 'Estado: ' + assemblyStatus }}</p>
+        <h1>{{ assemblyStatus === 'completed' ? 'Asamblea finalizada' : round?.status === 'published' ? 'Resultados publicados' : round?.status === 'open' ? round.title : 'Sala de Asamblea' }}</h1>
+        <p class="projector-subtitle">{{ assemblyStatus === 'completed' ? `Sesión concluida${completionTime ? ` · ${completionTime}` : ''}` : round?.status === 'open' ? 'Votación abierta' : round?.status === 'published' ? 'Resultados autorizados por la mesa' : 'Estado: ' + assemblyStatus }}</p>
         <div v-if="round?.status === 'published'" class="results-list"><div v-for="result in state?.results || []" :key="result.label"><span>{{ result.label }}</span><strong>{{ result.count }}</strong></div></div>
         <div v-else class="projector-progress"><strong>{{ state?.participantCount ?? 0 }}</strong><span>participaciones registradas</span></div>
         <div v-if="lobbyStatus === 'lobby_open'" class="projector-lobby"><img v-if="qrImage" class="projector-qr" :src="qrImage" alt="Código QR para unirse a la Asamblea" /><div>Escanea el QR para unirte<p>Código: <strong>{{ code }}</strong></p></div></div>

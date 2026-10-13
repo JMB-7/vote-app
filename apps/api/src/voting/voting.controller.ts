@@ -15,6 +15,7 @@ import { ModeratorGuard, ParticipantGuard } from '../auth/auth.guards.js'
 import { VotingService } from './voting.service.js'
 import {
   CreateAssemblyDto,
+  CompleteAssemblyDto,
   CreateRoundDto,
   JoinAssemblyDto,
   LobbyPatchDto,
@@ -83,6 +84,11 @@ export class ModeratorController {
   @Patch('assemblies/:assemblyId/lobby')
   lobby(@Param('assemblyId', ParseUUIDPipe) assemblyId: string, @Body() input: LobbyPatchDto) {
     return this.voting.changeLobby(assemblyId, input.status)
+  }
+
+  @Post('assemblies/:assemblyId/complete')
+  completeAssembly(@Param('assemblyId', ParseUUIDPipe) assemblyId: string, @Body() input: CompleteAssemblyDto) {
+    return this.voting.completeAssembly(assemblyId, input.confirmation)
   }
 
   @Patch('participants/:participantId')

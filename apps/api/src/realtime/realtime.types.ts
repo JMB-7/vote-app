@@ -27,6 +27,7 @@ export interface LobbyStateEvent {
 
 export interface AssemblyStateEvent {
   status: AssemblyStatus
+  completedAt?: string
 }
 
 export interface RoundStateEvent {
@@ -49,6 +50,7 @@ export interface ParticipantSummaryEvent {
 
 export interface ParticipantStateEvent {
   assemblyStatus: AssemblyStatus
+  assemblyCompletedAt?: string | null
   lobbyStatus: LobbyStatus
   openRound: (RoundStateEvent & { options: Array<{ optionId: string; label: string }> }) | null
   participationStatus: 'pending' | 'recorded'

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { randomUUID } from 'node:crypto'
 import test from 'node:test'
-import { ConflictException } from '@nestjs/common'
+import { ConflictException, UnprocessableEntityException } from '@nestjs/common'
 import { hashCredential, newOpaqueCredential } from '../src/auth/credentials.js'
 import { PrismaService } from '../src/prisma/prisma.service.js'
 import { VotingService } from '../src/voting/voting.service.js'
@@ -19,7 +19,11 @@ test('database voting flow: unique concurrent cast, close gate, then explicit pu
   const joinCode = newOpaqueCredential()
   const token = newOpaqueCredential()
   const noOp = () => undefined
-  const realtime = new Proxy({}, { get: () => noOp }) as RealtimeGateway
+  const realtimeEvents: Array<{ name: string; payload: unknown }> = []
+  const realtime = new Proxy({}, { get: (_target, name: string) => (...args: unknown[]) => {
+    if (name === 'assemblyState') realtimeEvents.push({ name: String(name), payload: args[1] })
+    return noOp()
+  } }) as RealtimeGateway
   const service = new VotingService(prisma, realtime)
   let assemblyId: string | undefined
 
@@ -48,6 +52,10 @@ test('database voting flow: unique concurrent cast, close gate, then explicit pu
       },
       include: { options: true },
     })
+
+    await assert.rejects(service.completeAssembly(assemblyId, true), (error: unknown) =>
+      error instanceof ConflictException && error.message.includes('Cierra la papeleta abierta'),
+    )
 
     const duplicateAttempts = await Promise.allSettled([
       service.castVote(participant.id, round.id, round.options[0].id),
@@ -80,6 +88,35 @@ test('database voting flow: unique concurrent cast, close gate, then explicit pu
     assert.equal(publishedSnapshot.results?.reduce((sum, option) => sum + option.count, 0), 1)
     const visible = await service.publicState(joinCode)
     assert.equal('results' in visible, true)
+
+    await assert.rejects(service.completeAssembly(assemblyId, false as true), (error: unknown) =>
+      error instanceof UnprocessableEntityException,
+    )
+    const completed = await service.completeAssembly(assemblyId, true)
+    const repeatedCompletion = await service.completeAssembly(assemblyId, true)
+    assert.deepEqual(repeatedCompletion, completed)
+    assert.equal(await prisma.auditEvent.count({ where: { assemblyId, action: 'assembly.completed' } }), 1)
+    assert.equal(realtimeEvents.length, 1)
+    assert.deepEqual(realtimeEvents[0]?.payload, { status: 'completed', completedAt: completed.completedAt })
+
+    await assert.rejects(service.joinAssembly(joinCode, 'Late', 'Join'), ConflictException)
+    await assert.rejects(service.createRound(assemblyId, {
+      title: 'Late ballot', format: 'single_choice', options: [{ label: 'A' }, { label: 'B' }], countingRule: { kind: 'count_only' },
+    }), ConflictException)
+    await assert.rejects(service.castVote(participant.id, round.id, round.options[0].id), ConflictException)
+    await assert.rejects(service.changeLobby(assemblyId, 'lobby_closed'), ConflictException)
+    await assert.rejects(service.patchParticipant(participant.id, { firstName: 'Changed' }), ConflictException)
+
+    const completedParticipantState = await service.participantState(participant.id)
+    assert.equal(completedParticipantState.assemblyStatus, 'completed')
+    assert.equal(completedParticipantState.assemblyCompletedAt, completed.completedAt)
+    const completedPublicState = await service.publicState(joinCode)
+    assert.equal(completedPublicState.assembly.status, 'completed')
+    assert.equal(completedPublicState.assembly.completedAt, completed.completedAt)
+    assert.deepEqual(completedPublicState.results, published.results)
+    const completedModeratorState = await service.moderatorAssembly(assemblyId)
+    assert.equal(completedModeratorState.status, 'completed')
+    assert.equal(completedModeratorState.completedAt, completed.completedAt)
   } finally {
     if (assemblyId) await prisma.assembly.deleteMany({ where: { id: assemblyId } })
     await prisma.organization.deleteMany({ where: { id: organizationId } })

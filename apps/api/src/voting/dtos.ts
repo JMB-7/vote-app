@@ -35,6 +35,11 @@ export class LobbyPatchDto {
   status!: 'lobby_open' | 'lobby_closed'
 }
 
+export class CompleteAssemblyDto {
+  @Equals(true)
+  confirmation!: true
+}
+
 export class ParticipantPatchDto {
   @IsOptional() @IsString() @Matches(/\S/) @MinLength(1) @MaxLength(80)
   firstName?: string

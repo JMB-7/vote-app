@@ -59,6 +59,9 @@ button:not(:disabled):active { transform: translateY(1px); }
 .sync { min-height: 1.3rem; color: var(--muted); font-size: .8rem; text-align: right; }
 .status-panel { display: flex; align-items: flex-start; gap: .9rem; padding: 1.15rem; border-radius: .75rem; background: #f4f7fc; }
 .status-panel p { margin: .35rem 0 0; color: var(--muted); line-height: 1.5; }
+.assembly-completed { margin: 1rem 0; border: 1px solid #abd9bf; background: #effaf3; }
+.assembly-completed .status-dot { background: #3a9a61; box-shadow: 0 0 0 4px #dff2e6; }
+.assembly-close > p:not(.eyebrow) { max-width: 48rem; color: var(--muted); line-height: 1.55; }
 .status-dot { width: .7rem; height: .7rem; margin-top: .25rem; border-radius: 50%; background: #e0aa42; box-shadow: 0 0 0 4px #f8efd9; }
 .options { display: grid; gap: .65rem; margin: 1.4rem 0; padding: 0; border: 0; }
 .options legend { margin-bottom: .6rem; color: #34435b; font-weight: 700; }

@@ -133,7 +133,10 @@ export class RealtimePublisher {
   constructor(private readonly server: RealtimeServer) {}
 
   assemblyState(assemblyId: string, payload: RealtimeServerToClientEvents['assembly.state'] extends (arg: infer P) => void ? P : never): void {
-    this.server.to([publicRoom(assemblyId), moderatorRoom(assemblyId)]).emit('assembly.state', { status: payload.status })
+    this.server.to([publicRoom(assemblyId), moderatorRoom(assemblyId), participantBroadcastRoom(assemblyId)]).emit('assembly.state', {
+      status: payload.status,
+      ...(payload.completedAt ? { completedAt: payload.completedAt } : {}),
+    })
   }
 
   lobbyState(assemblyId: string, payload: RealtimeServerToClientEvents['lobby.state'] extends (arg: infer P) => void ? P : never): void {
@@ -178,6 +181,7 @@ export class RealtimePublisher {
       : undefined
     this.server.to(`participant:${sessionId}`).emit('participant.state', {
       assemblyStatus: payload.assemblyStatus,
+      ...(payload.assemblyCompletedAt !== undefined ? { assemblyCompletedAt: payload.assemblyCompletedAt } : {}),
       lobbyStatus: payload.lobbyStatus,
       openRound,
       participationStatus: payload.participationStatus,

@@ -162,6 +162,106 @@ test('moderador ejecuta el cierre de una papeleta mediante acción confirmada', 
   await expect(page.getByRole('button', { name: 'Publicar resultados' })).toBeVisible()
 })
 
+test('moderador finaliza la Asamblea explícitamente y el panel queda en modo de consulta', async ({ page }) => {
+  let roundClosed = false
+  let assemblyCompleted = false
+  const completedAt = '2026-10-02T18:30:00.000Z'
+  await page.addInitScript(() => {
+    sessionStorage.setItem('moderatorToken', 'synthetic-moderator-token')
+    sessionStorage.setItem('assemblyId', 'synthetic-assembly')
+  })
+  await page.route(api, async (route) => {
+    const request = route.request()
+    const url = new URL(request.url())
+    if (request.method() === 'GET' && url.pathname.endsWith('/moderator/assemblies/synthetic-assembly')) {
+      await route.fulfill({ json: {
+        id: 'synthetic-assembly',
+        name: 'Asamblea de prueba',
+        status: assemblyCompleted ? 'completed' : 'in_progress',
+        completedAt: assemblyCompleted ? completedAt : null,
+        participants: [{ id: 'synthetic-person', firstName: 'Delegado', lastName: 'Sintético' }],
+        participantCount: 1,
+        eligibleCount: 1,
+        rounds: [{ id: 'synthetic-round', title: 'Elección de prueba', status: roundClosed ? 'closed' : 'open', options: [{ id: 'a', label: 'Opción Alfa (prueba)' }] }],
+      } })
+      return
+    }
+    if (request.method() === 'POST' && url.pathname.endsWith('/moderator/rounds/synthetic-round/close')) {
+      roundClosed = true
+      await route.fulfill({ status: 201, json: { status: 'closed' } })
+      return
+    }
+    if (request.method() === 'POST' && url.pathname.endsWith('/moderator/assemblies/synthetic-assembly/complete')) {
+      expect(request.postDataJSON()).toEqual({ confirmation: true })
+      assemblyCompleted = true
+      await route.fulfill({ status: 201, json: { status: 'completed', completedAt } })
+      return
+    }
+    await route.fulfill({ status: 404, json: { message: 'No mock route for synthetic UI test' } })
+  })
+
+  await page.goto('/moderator')
+  await expect(page.getByRole('heading', { name: 'Control de Asamblea' })).toBeVisible()
+  await expect(page.getByText('Cierra la papeleta abierta antes de finalizar la Asamblea.')).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Finalizar Asamblea' })).toBeDisabled()
+
+  page.once('dialog', (dialog) => dialog.accept())
+  await page.getByRole('button', { name: 'Cerrar papeleta' }).click()
+  await expect(page.getByText('Acción registrada.')).toBeVisible()
+  await page.getByRole('button', { name: 'Sincronizar estado' }).click()
+  await expect(page.getByRole('button', { name: 'Finalizar Asamblea' })).toBeEnabled()
+
+  page.once('dialog', (dialog) => dialog.accept())
+  await page.getByRole('button', { name: 'Finalizar Asamblea' }).click()
+  await expect(page.getByText('La Asamblea quedó finalizada y disponible en modo de consulta.')).toBeVisible()
+  await expect(page.getByText('Asamblea finalizada', { exact: true })).toBeVisible()
+  await expect(page.getByText(/Se registró/)).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Finalizar Asamblea' })).toHaveCount(0)
+  await expect(page.getByRole('button', { name: 'Preparar papeleta' })).toHaveCount(0)
+  await expect(page.getByRole('button', { name: 'Publicar resultados' })).toHaveCount(0)
+})
+
+test('delegado y proyector ven que la Asamblea concluyó y conservan resultados publicados', async ({ page }) => {
+  const completedAt = '2026-10-02T18:30:00.000Z'
+  await page.addInitScript(() => {
+    localStorage.setItem('participantSessionToken', 'synthetic-participant-token')
+    localStorage.setItem('assemblyJoinCode', 'DEMO-ROOM')
+  })
+  await page.route(api, async (route) => {
+    const url = new URL(route.request().url())
+    if (url.pathname.endsWith('/participant/me')) {
+      await route.fulfill({ json: {
+        assemblyStatus: 'completed',
+        assemblyCompletedAt: completedAt,
+        lobbyStatus: 'closed',
+        openRound: { roundId: 'synthetic-round', title: 'Elección publicada', status: 'published', options: [] },
+        participationStatus: 'recorded',
+        results: [{ label: 'Opción declarada', count: 1 }],
+      } })
+      return
+    }
+    if (url.pathname.endsWith('/assemblies/DEMO-ROOM/public-state')) {
+      await route.fulfill({ json: {
+        assembly: { name: 'Asamblea de prueba', status: 'completed', completedAt, lobbyStatus: 'lobby_closed' },
+        participantCount: 1,
+        currentRound: { id: 'synthetic-round', title: 'Elección publicada', status: 'published' },
+        results: [{ label: 'Opción declarada', count: 1 }],
+      } })
+      return
+    }
+    await route.fulfill({ status: 404, json: { message: 'No mock route for synthetic UI test' } })
+  })
+
+  await page.goto('/')
+  await expect(page.getByRole('heading', { name: 'Asamblea finalizada' })).toBeVisible()
+  await expect(page.getByText('La sesión concluyó')).toBeVisible()
+  await expect(page.getByText('Tu participación está registrada')).toBeVisible()
+
+  await page.goto('/projector?code=DEMO-ROOM')
+  await expect(page.getByRole('heading', { name: 'Asamblea finalizada' })).toBeVisible()
+  await expect(page.getByText('Opción declarada')).toBeVisible()
+})
+
 test('moderador con credencial caducada vuelve a mostrar acceso y elimina el token guardado', async ({ page }) => {
   await page.addInitScript(() => {
     sessionStorage.setItem('moderatorToken', 'stale-moderator-token')
